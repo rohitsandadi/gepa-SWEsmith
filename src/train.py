@@ -100,8 +100,8 @@ def main():
     if args.smoke_test:
         args.generations = 1
         args.train_size = 2
-        print("🔥 SMOKE TEST MODE 🔥")
-        logger.info("Running in SMOKE TEST mode: 1 generation, 2 tasks")
+        print("TEST MODE")
+        logger.info("Running in TEST mode: 1 generation, 2 tasks")
 
     # Initialize cost tracker
     tracker = get_tracker()

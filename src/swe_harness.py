@@ -118,7 +118,7 @@ class SWEHarness:
         """Run verification tests and return (passed, output).
 
         Returns both the pass/fail status and the full test output,
-        which includes rich diagnostic information like:
+        which has info like:
         - Test failure messages
         - Stack traces
         - Compilation errors
