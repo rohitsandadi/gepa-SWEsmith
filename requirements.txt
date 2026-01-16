@@ -1,5 +1,4 @@
 # GEPA + SWE-smith + Mini-SWE-Agent Research Environment
-# Core dependencies for AI/ML research with software engineering agents
 
 # GEPA - Genetic-Pareto prompt optimization framework
 gepa
@@ -20,3 +19,4 @@ python-dotenv
 pandas
 numpy
 tqdm
+pytest

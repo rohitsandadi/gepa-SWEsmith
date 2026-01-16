@@ -1,0 +1,31 @@
+GEPA Evaluation Results
+=======================
+Date: 2026-01-16
+Model: openai/gpt-5.2
+
+TRAINING RUN RESULTS (Validation Set)
+-------------------------------------
+Baseline:  0/3 (0.0%)
+Optimized: 2/3 (66.7%) 
+
+Pareto selection active: Yes
+Generations: 4
+Runtime: ~31 minutes
+Cost: ~$3
+
+TEST SET EVALUATION
+-------------------
+Tasks evaluated: 5 (from test split)
+
+Baseline:  0/5 (0.0%)
+Optimized: 0/5 (0.0%)
+
+Note: Test set contained different task types than validation, the problems 
+that GEPA optimized for were not present in the test set. This was just an example run
+to demonstrate all the code is working.
+
+CONCLUSION
+----------
+GEPA successfully optimized prompts on validation set (0% -> 66.7%)
+but the optimized prompt did not generalize to the test set tasks.
+This suggests the need for larger/more diverse training data.
