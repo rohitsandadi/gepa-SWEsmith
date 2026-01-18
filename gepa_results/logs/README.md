@@ -1,24 +1,5 @@
 # GEPA Experiment Logs
 
-## Two Tracking Systems
-
-### 1. Wandb (Web Dashboard)
-- **Where**: https://wandb.ai (login required)
-- **Enable with**: `--wandb` flag
-- **What it shows**:
-  - Live graphs of val set scores over time
-  - Training curves
-  - Easy comparison between runs
-
-
-### 2. Custom Logs (This Folder)
-- **Where**: `gepa_results/logs/<run_id>/`
-- **What it shows**:
-  - Detailed per-task metrics (tokens, steps)
-  - Exactly what the proposer sees (for debugging)
-  - All generated prompts
-- **Good for**: Deep analysis, debugging, changing proposer prompt
-
 ## Folder Structure
 
 ```
@@ -53,6 +34,12 @@ gepa_results/logs/
 ```
 
 ## Where to Find What You Need
+
+- **What it shows**:
+  - Detailed per-task metrics (tokens, steps)
+  - Exactly what the proposer sees (for debugging)
+  - All generated prompts
+
 
 | Request | Where to Find It |
 |---------|------------------|
