@@ -11,10 +11,7 @@ load_dotenv()
 
 from datasets import load_dataset
 from gepa.api import optimize
-from gepa.utils.stop_condition import (
-    TimeoutStopCondition,
-    NoImprovementStopper,
-)
+from gepa.utils.stop_condition import TimeoutStopCondition
 from src.adapters.swe_adapter import SWEAdapter
 from src.cost_tracker import reset_tracker
 from src.experiment_logger import ExperimentLogger, set_logger
@@ -62,21 +59,21 @@ def load_pygments_data_streaming(limit=10):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--generations", type=int, default=2, help="Number of GEPA generations")
-    parser.add_argument("--train-size", type=int, default=5, help="Number of training examples")
-    parser.add_argument("--val-size", type=int, default=5, help="Number of validation examples for Pareto selection")
+    parser.add_argument("--train-size", type=int, default=200, help="Number of training examples")
+    parser.add_argument("--val-size", type=int, default=50, help="Number of validation examples for Pareto selection")
     parser.add_argument("--workspace", type=str, default="/tmp/gepa_workenvs/pygments")
-    parser.add_argument("--model", type=str, default="gemini/gemma-3-27b-it", 
-                        help="Agent model for running tasks (default: gemini/gemma-3-27b-it)")
-    parser.add_argument("--reflection-model", type=str, default=None,
-                        help="Model for GEPA reflection/prompt optimization (default: same as --model)")
+    parser.add_argument("--model", type=str, default="gpt-5.2",
+                        help="Agent model for running tasks (default: gpt-5.2)")
+    parser.add_argument("--reflection-model", type=str, default="gpt-5.2-pro",
+                        help="Model for GEPA reflection/prompt optimization (default: gpt-5.2-pro)")
     parser.add_argument("--smoke-test", action="store_true", help="Run a quick smoke test")
     parser.add_argument("--use-split", action="store_true", help="Use pre-split train data from data/ directory")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument("--timeout", type=int, default=3600, help="Max seconds to run (default: 1 hour)")
+    parser.add_argument("--timeout", type=int, default=43200, help="Max seconds to run (default: 12 hours)")
     parser.add_argument("--stop-if-no-improvement", type=int, default=10, help="Stop after N iterations without improvement")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--workers", type=int, default=6, help="Number of parallel workers (requires setup_parallel_workspaces.sh)")
-    parser.add_argument("--max-metric-calls", type=int, default=1500, help="Max rollouts for GEPA (controls budget)")
+    parser.add_argument("--max-metric-calls", type=int, default=600, help="Max rollouts for GEPA (controls budget)")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb tracking")
     parser.add_argument("--wandb-project", type=str, default="gepa-swesmith", help="Wandb project name")
     args = parser.parse_args()
@@ -172,10 +169,9 @@ When you are done, submit your changes.
     
     seed_candidate = {"system_prompt": initial_prompt}
 
-    # 4. Setup stop conditions
+    # 4. Setup stop conditions (NoImprovementStopper disabled - let max_metric_calls control budget)
     stop_callbacks = [
         TimeoutStopCondition(timeout_seconds=args.timeout),
-        NoImprovementStopper(max_iterations_without_improvement=args.stop_if_no_improvement),
     ]
 
     # 5. Run GEPA

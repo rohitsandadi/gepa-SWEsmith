@@ -115,9 +115,7 @@ class ExperimentLogger:
         latest_link = self.base_log_dir / "latest"
         if latest_link.is_symlink():
             latest_link.unlink()
-        elif latest_link.exists():
-            pass  # Don't overwrite if it's a real directory
-        else:
+        if not latest_link.exists():
             latest_link.symlink_to(self.run_id)
 
         print(f"📊 Experiment logger initialized")

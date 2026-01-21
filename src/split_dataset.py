@@ -13,12 +13,23 @@ def split_pygments_dataset(
     train_ratio=0.65,  # 65% train (~780 tasks)
     val_ratio=0.05,    # 5% validation (~60 tasks for GEPA development)
     test_ratio=0.30,   # 30% test (~360 tasks for final evaluation)
-    seed=42
+    seed=42,
+    # Explicit sizes (override ratios if provided)
+    explicit_train_size=None,
+    explicit_val_size=None,
+    explicit_test_size=None,
 ):
     """
     Load Pygments tasks and split into train/val/test sets.
     Saves to data/ directory for reproducibility.
+
+    If explicit sizes are provided, they override the ratios.
     """
+
+    # If explicit sizes provided, calculate total needed
+    if explicit_train_size and explicit_val_size and explicit_test_size:
+        total_limit = explicit_train_size + explicit_val_size + explicit_test_size
+        print(f"Using explicit sizes: {explicit_train_size}/{explicit_val_size}/{explicit_test_size} = {total_limit} total")
 
     print(f"Loading Pygments tasks from SWE-smith...")
     ds = load_dataset("SWE-bench/SWE-smith", split="train", streaming=True)
@@ -40,11 +51,16 @@ def split_pygments_dataset(
     random.seed(seed)
     random.shuffle(pygments_tasks)
 
-    # Calculate split sizes
+    # Calculate split sizes (explicit sizes override ratios)
     n = len(pygments_tasks)
-    train_size = int(n * train_ratio)
-    val_size = int(n * val_ratio)
-    test_size = n - train_size - val_size
+    if explicit_train_size and explicit_val_size and explicit_test_size:
+        train_size = explicit_train_size
+        val_size = explicit_val_size
+        test_size = explicit_test_size
+    else:
+        train_size = int(n * train_ratio)
+        val_size = int(n * val_ratio)
+        test_size = n - train_size - val_size
 
     # Split the data
     train_data = pygments_tasks[:train_size]
@@ -83,13 +99,25 @@ def split_pygments_dataset(
         'val_ratio': val_ratio,
         'test_ratio': test_ratio,
         'seed': seed,
-        'target_repo': target_repo
+        'target_repo': target_repo,
+        'explicit_sizes_used': explicit_train_size is not None,
     }
 
     metadata_file = data_dir / "split_metadata.json"
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
     print(f"  Saved metadata to {metadata_file}")
+
+    # Save instance IDs separately for easy verification (in order)
+    instance_ids = {
+        'train': [t.get('instance_id', f'unknown_{i}') for i, t in enumerate(train_data)],
+        'val': [t.get('instance_id', f'unknown_{i}') for i, t in enumerate(val_data)],
+        'test': [t.get('instance_id', f'unknown_{i}') for i, t in enumerate(test_data)],
+    }
+    ids_file = data_dir / "split_instance_ids.json"
+    with open(ids_file, 'w') as f:
+        json.dump(instance_ids, f, indent=2)
+    print(f"  Saved instance IDs to {ids_file}")
 
     print(f"\n✓ Dataset split complete!")
     print(f"\nUsage:")
@@ -113,6 +141,13 @@ if __name__ == "__main__":
                         help="Fraction for validation (default: 0.05)")
     parser.add_argument("--test-ratio", type=float, default=0.30,
                         help="Fraction for test (default: 0.30)")
+    # Explicit sizes (override ratios)
+    parser.add_argument("--train-size", type=int, default=None,
+                        help="Explicit train size (overrides --train-ratio)")
+    parser.add_argument("--val-size", type=int, default=None,
+                        help="Explicit val size (overrides --val-ratio)")
+    parser.add_argument("--test-size", type=int, default=None,
+                        help="Explicit test size (overrides --test-ratio)")
     args = parser.parse_args()
 
     split_pygments_dataset(
@@ -120,5 +155,8 @@ if __name__ == "__main__":
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
-        seed=args.seed
+        seed=args.seed,
+        explicit_train_size=args.train_size,
+        explicit_val_size=args.val_size,
+        explicit_test_size=args.test_size,
     )
