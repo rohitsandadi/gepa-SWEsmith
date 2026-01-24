@@ -1,3 +1,4 @@
+import gc
 import os
 import shutil
 import subprocess
@@ -133,9 +134,16 @@ class SWEHarness:
                 capture_output=True,
                 text=True
             )
-            return diff_proc.stdout, trace, metrics
+            patch = diff_proc.stdout
+
+            # Explicit cleanup to prevent memory leaks
+            del agent
+            gc.collect()
+
+            return patch, trace, metrics
 
         except Exception as e:
+            gc.collect()  # Clean up even on error
             return "", f"Agent crashed: {str(e)}", {"steps": 0, "estimated_tokens": 0, "num_messages": 0}
 
     def verify(self, test_cmd: str = "pytest") -> Tuple[bool, str]:
