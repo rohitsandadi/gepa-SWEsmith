@@ -6,6 +6,10 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Suppress verbose LiteLLM logging
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
+
 # Load environment variables
 load_dotenv()
 
@@ -19,7 +23,7 @@ from src.experiment_logger import ExperimentLogger, set_logger
 def load_split_data(split_name="train", limit=None):
     """
     Load pre-split dataset from data/ directory.
-    If split doesn't exist, will fall back to streaming load.
+    If split doesn't exist, will fall back to direct HuggingFace load.
     """
     data_file = Path("data") / f"pygments_{split_name}.json"
 
@@ -35,13 +39,13 @@ def load_split_data(split_name="train", limit=None):
         return data
     else:
         print(f"WARNING: Pre-split data not found at {data_file}")
-        print(f"Falling back to streaming load. Run 'python split_dataset.py' to create splits.")
-        return load_pygments_data_streaming(limit=limit or 10)
+        print(f"Falling back to direct HuggingFace load. Run 'python split_dataset.py' to create splits.")
+        return load_pygments_data_direct(limit=limit or 10)
 
-def load_pygments_data_streaming(limit=10):
-    """Fallback: Stream from HuggingFace if pre-split data not available."""
-    print(f"Loading {limit} Pygments examples from SWE-smith (streaming)...")
-    ds = load_dataset("SWE-bench/SWE-smith", split="train", streaming=True)
+def load_pygments_data_direct(limit=10):
+    """Fallback: Load from HuggingFace if pre-split data not available."""
+    print(f"Loading {limit} Pygments examples from SWE-smith...")
+    ds = load_dataset("SWE-bench/SWE-smith", split="train")
 
     data = []
     count = 0
@@ -61,7 +65,6 @@ def main():
     parser.add_argument("--generations", type=int, default=2, help="Number of GEPA generations")
     parser.add_argument("--train-size", type=int, default=200, help="Number of training examples")
     parser.add_argument("--val-size", type=int, default=50, help="Number of validation examples for Pareto selection")
-    parser.add_argument("--workspace", type=str, default="/tmp/gepa_workenvs/pygments")
     parser.add_argument("--model", type=str, default="gpt-5.2",
                         help="Agent model for running tasks (default: gpt-5.2)")
     parser.add_argument("--reflection-model", type=str, default="gpt-5.2-pro",
@@ -122,11 +125,11 @@ def main():
         val_data = load_split_data(split_name="val", limit=args.val_size)
     else:
         print("\n" + "="*70)
-        print("Loading data via streaming (not using pre-split)")
+        print("Loading data directly from HuggingFace (not using pre-split)")
         print("Recommendation: Run 'python split_dataset.py' and use --use-split flag")
         print("="*70)
-        train_data = load_pygments_data_streaming(limit=args.train_size)
-        # Use subset for validation when streaming
+        train_data = load_pygments_data_direct(limit=args.train_size)
+        # Use subset for validation
         val_data = train_data[:min(args.val_size, len(train_data))]
 
     print(f"Loaded {len(train_data)} training, {len(val_data)} validation examples.")
@@ -147,27 +150,26 @@ def main():
         "timeout": args.timeout,
         "stop_if_no_improvement": args.stop_if_no_improvement,
         "use_split": args.use_split,
+        "execution_mode": "docker",
         "wandb": args.wandb,
         "wandb_project": args.wandb_project if args.wandb else None,
     })
 
-    # 2. Setup Adapter
-    adapter = SWEAdapter(workspace_root=args.workspace, model_name=args.model, n_workers=args.workers)
+    # 2. Setup Adapter (Docker mode only)
+    adapter = SWEAdapter(
+        model_name=args.model, 
+        n_workers=args.workers
+    )
     logger.info(f"Model: {args.model}")
-    logger.info(f"Workspace: {args.workspace}")
+    logger.info(f"Execution: Docker containers via SWE-smith")
 
     # 3. Initial Candidate (The Baseline Prompt)
-    # We use a simplified version of the standard SWE-agent prompt
-    initial_prompt = """
-You are an autonomous software engineer.
-You will be given a specific issue to fix in a software repository.
-You have access to the codebase and can write files and run commands.
-Your goal is to reproduce the issue (if possible) and then fix it.
-You MUST generate a patch using `git diff` implicitly by changing files.
-When you are done, submit your changes.
-    """.strip()
+    # Start with empty skills - GEPA will learn and evolve them
+    # The system_template in mini.yaml already has base instructions,
+    # this just populates the {{ skills }} placeholder
+    initial_skills = ""
     
-    seed_candidate = {"system_prompt": initial_prompt}
+    seed_candidate = {"skills": initial_skills}
 
     # 4. Setup stop conditions (NoImprovementStopper disabled - let max_metric_calls control budget)
     stop_callbacks = [
@@ -182,7 +184,7 @@ When you are done, submit your changes.
     logger.info(f"Agent model: {args.model}")
     logger.info(f"Reflection model: {reflection_model}")
     logger.info(f"Workers: {args.workers}")
-    logger.info(f"Initial prompt: {initial_prompt[:100]}...")
+    logger.info(f"Initial skills: {initial_skills[:100] if initial_skills else '(empty)'}...")
 
     print(f"\n📊 Watch progress:")
     print(f"   tail -f {log_file}")
@@ -236,30 +238,25 @@ When you are done, submit your changes.
     print("\nBest Candidate Found:")
     print(result.best_candidate)
 
-    # Save best prompt to run directory
-    best_prompt_file = run_dir / "best_prompt.txt"
-    with open(best_prompt_file, 'w') as f:
-        f.write(result.best_candidate.get("system_prompt", ""))
+    # Save best skills to run directory
+    best_skills_file = run_dir / "best_skills.txt"
+    with open(best_skills_file, 'w') as f:
+        f.write(result.best_candidate.get("skills", ""))
 
-    # Also save baseline for comparison
-    baseline_prompt = """You are an autonomous software engineer.
-You will be given a specific issue to fix in a software repository.
-You have access to the codebase and can write files and run commands.
-Your goal is to reproduce the issue (if possible) and then fix it.
-You MUST generate a patch using `git diff` implicitly by changing files.
-When you are done, submit your changes."""
-    baseline_file = run_dir / "baseline_prompt.txt"
+    # Also save baseline (empty skills) for comparison
+    baseline_skills = ""  # We start with empty skills
+    baseline_file = run_dir / "baseline_skills.txt"
     with open(baseline_file, 'w') as f:
-        f.write(baseline_prompt)
+        f.write(baseline_skills)
 
-    print(f"\n✓ Prompts saved to run directory:")
-    print(f"   Best: {best_prompt_file}")
+    print(f"\n✓ Skills saved to run directory:")
+    print(f"   Best: {best_skills_file}")
     print(f"   Baseline: {baseline_file}")
     print(f"\nNext steps:")
     print(f"  1. Evaluate on test set:")
-    print(f"     python src/evaluate_prompts.py --split test --prompt {best_prompt_file}")
+    print(f"     python src/evaluate_prompts.py --split test --prompt {best_skills_file}")
     print(f"  2. Compare baseline vs optimized:")
-    print(f"     python src/evaluate_prompts.py --baseline {baseline_file} --optimized {best_prompt_file}")
+    print(f"     python src/evaluate_prompts.py --baseline {baseline_file} --optimized {best_skills_file}")
     print(f"  3. Review full results in: {run_dir}/")
 
     # Print final cost summary
@@ -269,9 +266,9 @@ When you are done, submit your changes."""
     tracker.print_summary()
 
     # Save experiment summary with before/after comparison
-    best_prompt = result.best_candidate.get("system_prompt", "")
+    best_skills = result.best_candidate.get("skills", "")
     exp_logger.save_summary(
-        best_prompt=best_prompt,
+        best_prompt=best_skills,  # experiment_logger still uses best_prompt param name
         extra_info={
             "model": args.model,
             "reflection_model": reflection_model,

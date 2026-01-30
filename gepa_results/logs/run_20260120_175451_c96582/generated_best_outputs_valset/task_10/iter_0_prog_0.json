@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/formatters/__init__.py b/pygments/formatters/__init__.py\nindex 014de975..96c84b63 100644\n--- a/pygments/formatters/__init__.py\n+++ b/pygments/formatters/__init__.py\n@@ -45,9 +45,10 @@ def get_all_formatters():\n     \"\"\"Return a generator for all formatter classes.\"\"\"\n     # NB: this returns formatter classes, not info like get_all_lexers().\n     for info in FORMATTERS.values():\n-        if info[1] not in _formatter_cache:\n-            _load_formatters(info[0])\n-        yield _formatter_cache[info[1]]\n+        module_name, name = info[0], info[1]\n+        if name not in _formatter_cache:\n+            _load_formatters(module_name)\n+        yield _formatter_cache[name]\n     for _, formatter in find_plugin_formatters():\n         yield formatter\n \n",
-    "success": false,
-    "steps": 18,
-    "estimated_tokens": 9457
-}

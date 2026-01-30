@@ -103,8 +103,7 @@ class UnifiedCostTracker:
             except Exception:
                 pass
             
-            # Print real-time update (concise)
-            print(f"    [{call_type}] Call {call_num}: ${cost:.4f} (total: ${self.total_cost:.4f})")
+            # Cost tracking is silent - check log file or call print_summary() for details
     
     def write_summary(self) -> str:
         """Write human-readable summary to file and return it."""

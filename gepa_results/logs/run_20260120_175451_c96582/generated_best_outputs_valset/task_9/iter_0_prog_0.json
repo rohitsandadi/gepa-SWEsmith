@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/tests/test_perllexer.py b/tests/test_perllexer.py\nindex b2f5ddb8..4df8a44d 100644\n--- a/tests/test_perllexer.py\n+++ b/tests/test_perllexer.py\n@@ -11,7 +11,7 @@ import time\n import pytest\n \n from pygments.token import Keyword, Name, String, Text\n-from pygments.lexers.perl import PerlLexer\n+from pygments.lexers.perl import PerlLexer, Perl6Lexer\n \n \n @pytest.fixture(scope='module')\n@@ -188,3 +188,16 @@ def test_require_statement(lexer):\n                   [Keyword, Text.Whitespace, Name.Namespace])\n     assert_tokens(lexer, ['require', ' ', '\"Foo/Bar.pm\"'],\n                   [Keyword, Text.Whitespace, String])\n+\n+\n+def test_perl6_brackets_callback_does_not_crash():\n+    # Regression test: Perl6Lexer previously crashed with\n+    # NameError: name 'groups' is not defined\n+    lexer = Perl6Lexer()\n+    code = \"\"\"\n+role Q {\n+    method foo() { say \\\"hello\\\" }\n+}\n+\"\"\"\n+    tokens = list(lexer.get_tokens(code))\n+    assert tokens  # ensure we got some output\n",
-    "success": false,
-    "steps": 26,
-    "estimated_tokens": 22740
-}

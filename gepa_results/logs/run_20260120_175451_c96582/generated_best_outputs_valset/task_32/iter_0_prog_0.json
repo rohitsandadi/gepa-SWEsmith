@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/special.py b/pygments/lexers/special.py\nindex b8680b7a..877e8dd6 100644\n--- a/pygments/lexers/special.py\n+++ b/pygments/lexers/special.py\n@@ -35,6 +35,8 @@ class TextLexer(Lexer):\n         yield 0, Text, text\n \n     def analyse_text(text):\n+        # Keep this a low, non-zero baseline so TextLexer is a last resort\n+        # during lexer guessing (i.e. it must never return 1.0).\n         return TextLexer.priority\n \n \n",
-    "success": false,
-    "steps": 27,
-    "estimated_tokens": 17904
-}

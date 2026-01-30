@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/javascript.py b/pygments/lexers/javascript.py\nindex 891e48ea..ade3cc74 100644\n--- a/pygments/lexers/javascript.py\n+++ b/pygments/lexers/javascript.py\n@@ -755,6 +755,8 @@ class LassoLexer(RegexLexer):\n         self.requiredelimiters = get_bool_opt(\n             options, 'requiredelimiters', False)\n \n+        # These are used for fast membership checks during token post-processing.\n+        # They must be sets since we populate them via `.update(...)`.\n         self._builtins = set()\n         self._members = set()\n         if self.builtinshighlighting:\n",
-    "success": false,
-    "steps": 16,
-    "estimated_tokens": 11881
-}

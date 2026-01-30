@@ -66,7 +66,7 @@ def evaluate_prompt(
         )
 
     # Evaluate
-    candidate = {"system_prompt": prompt_text}
+    candidate = {"skills": prompt_text}
     eval_batch = adapter.evaluate(
         batch=data,
         candidate=candidate,

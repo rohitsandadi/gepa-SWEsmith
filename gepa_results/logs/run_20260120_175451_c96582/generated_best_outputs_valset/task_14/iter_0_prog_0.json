@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/token.py b/pygments/token.py\nindex f78018a7..f7af359a 100644\n--- a/pygments/token.py\n+++ b/pygments/token.py\n@@ -13,11 +13,11 @@ class _TokenType(tuple):\n     parent = None\n \n     def split(self):\n-        buf = []\n+        buf = [self]\n         node = self\n-        while node is not None:\n-            buf.append(node)\n+        while node.parent is not None:\n             node = node.parent\n+            buf.append(node)\n         buf.reverse()\n         return buf\n \n@@ -109,10 +109,15 @@ def string_to_tokentype(s):\n     \"\"\"\n     if isinstance(s, _TokenType):\n         return s\n-    if not s:\n+    if s == '':\n         return Token\n+    if not isinstance(s, str):\n+        raise TypeError(f'expected str or _TokenType, got {type(s)!r}')\n     node = Token\n-    for item in s.split('.'):\n+    parts = s.split('.')\n+    if parts and parts[0] == 'Token':\n+        parts = parts[1:]\n+    for item in parts:\n         node = getattr(node, item)\n     return node\n \n",
-    "success": false,
-    "steps": 13,
-    "estimated_tokens": 7897
-}

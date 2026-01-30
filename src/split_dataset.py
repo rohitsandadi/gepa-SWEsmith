@@ -32,7 +32,7 @@ def split_pygments_dataset(
         print(f"Using explicit sizes: {explicit_train_size}/{explicit_val_size}/{explicit_test_size} = {total_limit} total")
 
     print(f"Loading Pygments tasks from SWE-smith...")
-    ds = load_dataset("SWE-bench/SWE-smith", split="train", streaming=True)
+    ds = load_dataset("SWE-bench/SWE-smith", split="train")
 
     # Filter to Pygments tasks
     target_repo = "swesmith/pygments__pygments"

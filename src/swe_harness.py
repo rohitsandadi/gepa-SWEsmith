@@ -1,15 +1,54 @@
 import gc
 import os
-import shutil
-import subprocess
 import yaml
+import logging
+import uuid
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Tuple, Dict, Any
+
+# Suppress verbose LiteLLM logging
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+import litellm
+litellm.suppress_debug_info = True
 
 from minisweagent.agents.default import DefaultAgent
 from minisweagent.models.litellm_model import LitellmModel
-from minisweagent.environments.local import LocalEnvironment
-from minisweagent.config import get_config_path
+from minisweagent.environments.docker import DockerEnvironment, DockerEnvironmentConfig
+
+from swesmith.profiles import registry
+from swesmith.harness.utils import run_patch_in_container
+from swebench.harness.constants import KEY_INSTANCE_ID, LOG_TEST_OUTPUT, RUN_EVALUATION_LOG_DIR
+import docker
+
+
+class ExistingContainerEnvironment(DockerEnvironment):
+    """DockerEnvironment subclass that uses an existing container instead of creating one."""
+    
+    def __init__(self, container_id: str, cwd: str = "/testbed", timeout: int = 120):
+        # Don't call super().__init__() - it would try to create a new container
+        # Just set up the minimal config needed
+        self.logger = None
+        self.container_id = container_id
+        self.config = DockerEnvironmentConfig(
+            image="unused",  # Not used since we already have a container
+            cwd=cwd,
+            timeout=timeout,
+            env={
+                'PAGER': 'cat',
+                'MANPAGER': 'cat', 
+                'LESS': '-R',
+                'PIP_PROGRESS_BAR': 'off',
+                'TQDM_DISABLE': '1',
+            },
+        )
+    
+    def cleanup(self):
+        """No cleanup - container is managed by SWEHarness."""
+        pass
 
 @dataclass
 class TaskResult:
@@ -18,45 +57,80 @@ class TaskResult:
     output: str
 
 class SWEHarness:
-    def __init__(self, workspace_root: str = "/tmp/gepa_workenvs/pygments"):
-        self.workspace_root = workspace_root
+    def __init__(self):
+        """Initialize harness with SWE-smith Docker containers."""
+        self.container = None
+        self.repo_profile = None
+        self.current_task = None
         
-    def setup_task(self, base_commit: str, bug_patch: str = None):
-        """Checkout the specific commit and apply the bug patch.
-
-        SWE-smith workflow:
-        1. Checkout base_commit (clean code)
-        2. Apply bug_patch (introduces the synthetic bug)
-        3. Now the code has a bug for the agent to fix
-        """
-        # Reset any changes aggressively
-        subprocess.run(["git", "merge", "--abort"], cwd=self.workspace_root, stderr=subprocess.DEVNULL)
-        subprocess.run(["git", "restore", "."], cwd=self.workspace_root, check=False)
-        subprocess.run(["git", "clean", "-fdx"], cwd=self.workspace_root, check=True)
-        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=self.workspace_root, check=True)
-        # Checkout commit
-        subprocess.run(["git", "checkout", "-f", base_commit], cwd=self.workspace_root, check=True)
-
-        # Apply the bug patch (this introduces the bug the agent needs to fix)
-        if bug_patch:
-            result = subprocess.run(
-                ["git", "apply", "--verbose"],
-                input=bug_patch,
-                cwd=self.workspace_root,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                print(f"  WARNING: Failed to apply bug patch: {result.stderr[:200]}")
+        # Set DOCKER_HOST environment variable for rootless Docker
+        # This ensures SWE-smith's internal docker.from_env() calls work correctly
+        if not os.getenv('DOCKER_HOST'):
+            # Try to detect rootless Docker
+            uid = os.getuid()
+            xdg_runtime = os.getenv('XDG_RUNTIME_DIR')
+            
+            if xdg_runtime:
+                rootless_socket = f"unix://{xdg_runtime}/docker.sock"
             else:
-                print(f"  Bug patch applied successfully")
+                rootless_socket = f"unix:///run/user/{uid}/docker.sock"
+            
+            # Check if rootless socket exists
+            import pathlib
+            socket_path = rootless_socket.replace('unix://', '')
+            if pathlib.Path(socket_path).exists():
+                os.environ['DOCKER_HOST'] = rootless_socket
+                print(f"  Using rootless Docker: {rootless_socket}")
+        
+        # Try to connect to Docker
+        try:
+            self.docker_client = docker.from_env()
+            self.docker_client.ping()
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot connect to Docker: {e}\n\n"
+                f"Please ensure Docker is running:\n"
+                f"  Rootless: systemctl --user start docker\n"
+                f"  Standard: sudo systemctl start docker\n\n"
+                f"If using rootless Docker, ensure DOCKER_HOST is set:\n"
+                f"  export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock"
+            ) from e
+        
+    def setup_task(self, task_instance: Dict[str, Any]):
+        """Setup task environment using SWE-smith Docker container.
+        
+        Args:
+            task_instance: Full SWE-smith task instance
+        """
+        # Cleanup previous container if any
+        if self.container:
+            try:
+                self.container.stop()
+                self.container.remove()
+            except:
+                pass
+        
+        # Get container from SWE-smith
+        # The container comes with:
+        # - Repository cloned at /testbed
+        # - Instance branch checked out at HEAD (tests removed - agent can't see them)
+        # - All dependencies installed
+        # 
+        # NOTE: SWE-smith branch structure:
+        # - HEAD: Bug commit WITHOUT test files (for agent work)
+        # - HEAD~1: Bug commit WITH test files (for evaluation)
+        # The agent works at HEAD. Verification uses run_patch_in_container which
+        # handles the proper checkout to HEAD~1 for testing.
+        self.repo_profile = registry.get_from_inst(task_instance)
+        self.current_task = task_instance
+        self.container = self.repo_profile.get_container(task_instance)
+        print(f"  Docker container created: {self.container.id[:12]}")
+        
+    def run_agent(self, problem_statement: str, skills: str, model_name: str = "gemini/gemini-2.0-flash-exp") -> Tuple[str, str, dict]:
+        """Run the agent in Docker container and return (patch, conversation_trace, metrics).
 
-    def run_agent(self, problem_statement: str, system_prompt: str, model_name: str = "gemini/gemma-3-4b-it") -> Tuple[str, str, dict]:
-        """Run the agent and return (patch, conversation_trace, metrics).
-
-        The system_prompt from GEPA is used as additional context/instructions
-        that get prepended to the problem statement. This preserves mini-swe-agent's
-        built-in templates which contain essential formatting instructions.
+        The skills from GEPA are injected into the system template's {{ skills }} placeholder.
+        This allows GEPA to evolve the agent's learned skills over time.
 
         Returns:
             patch: The git diff of changes made
@@ -64,12 +138,11 @@ class SWEHarness:
             metrics: Dict with 'steps' (number of agent turns) and 'tokens' (estimated)
         """
         
-        # Load the full mini-swe-agent config (includes proper system template with
-        # file editing instructions, workflow guidance, etc.)
-        config_path = get_config_path("mini")  # Gets path to mini.yaml
+        # Load our custom mini-swe-agent config from the project directory
+        # This config has {{ skills }} placeholder that GEPA will optimize
+        config_path = os.path.join(os.path.dirname(__file__), "mini_swe_agent_config", "mini.yaml")
         with open(config_path) as f:
             config = yaml.safe_load(f)
-        
         # Extract only supported fields from agent config
         full_agent_config = config.get("agent", {})
         # DefaultAgent only accepts these template fields + limits
@@ -78,28 +151,33 @@ class SWEHarness:
             "format_error_template", "timeout_template", "step_limit", "cost_limit"
         ]
         agent_config = {k: v for k, v in full_agent_config.items() if k in supported_fields}
-        agent_config["step_limit"] = 30  # Reasonable limit for each task
+        agent_config["step_limit"] = 50  # Max steps per task
         
-        # Initialize Agent with the filtered config
+        # Get model kwargs from config and add OpenAI regional endpoint if needed
+        model_config = config.get("model", {})
+        model_kwargs = model_config.get("model_kwargs", {}).copy()
+        
+        # Add OpenAI regional endpoint (us.api.openai.com) if using OpenAI models
+        if "openai" in model_name.lower() or model_name.startswith("gpt-"):
+            if "api_base" not in model_kwargs:
+                model_kwargs["api_base"] = "https://us.api.openai.com/v1"
+        
+        # Initialize Agent with Docker container environment
+        # Use ExistingContainerEnvironment to execute commands inside the container
         agent = DefaultAgent(
-            model=LitellmModel(model_name=model_name),
-            env=LocalEnvironment(cwd=self.workspace_root),
+            model=LitellmModel(model_name=model_name, model_kwargs=model_kwargs),
+            env=ExistingContainerEnvironment(
+                container_id=self.container.id,
+                cwd="/testbed",
+                timeout=120,
+            ),
             **agent_config,
         )
 
-        # Prepend our custom prompt to the problem statement
-        # This way GEPA can optimize the instructions while keeping
-        # mini-swe-agent's built-in action formatting
-        enhanced_problem = f"""## Context
-{system_prompt}
-
-## Issue to Fix
-{problem_statement}
-"""
-
         try:
             # We wrap in try/except to ensure we capture trace even if it crashes
-            result = agent.run(enhanced_problem)
+            # Pass skills as a kwarg - matches {{ skills }} in system_template
+            result = agent.run(problem_statement, skills=skills)
 
             # Extract the full conversation trace from agent.messages
             # This contains the agent's reasoning, actions, and tool outputs
@@ -127,14 +205,9 @@ class SWEHarness:
                 "num_messages": len(agent.messages)
             }
 
-            # Generate patch of changes
-            diff_proc = subprocess.run(
-                ["git", "diff"],
-                cwd=self.workspace_root,
-                capture_output=True,
-                text=True
-            )
-            patch = diff_proc.stdout
+            # Generate patch of changes from Docker container
+            result = self.container.exec_run("git diff", workdir="/testbed")
+            patch = result.output.decode() if result.output else ""
 
             # Explicit cleanup to prevent memory leaks
             del agent
@@ -143,45 +216,84 @@ class SWEHarness:
             return patch, trace, metrics
 
         except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"  AGENT ERROR: {str(e)}")
+            print(f"  Traceback:\n{error_trace}")
             gc.collect()  # Clean up even on error
-            return "", f"Agent crashed: {str(e)}", {"steps": 0, "estimated_tokens": 0, "num_messages": 0}
+            return "", f"Agent crashed: {str(e)}\n\nTraceback:\n{error_trace}", {"steps": 0, "estimated_tokens": 0, "num_messages": 0}
 
-    def verify(self, test_cmd: str = "pytest") -> Tuple[bool, str]:
-        """Run verification tests and return (passed, output).
-
-        Returns both the pass/fail status and the full test output,
-        which has info like:
-        - Test failure messages
-        - Stack traces
-        - Compilation errors
-        - Expected vs actual values
+    def verify_with_patch(self, patch: str, f2p_only: bool = True, timeout: int = 300) -> Tuple[bool, str]:
+        """Verify a patch using SWE-smith's run_patch_in_container.
+        
+        This is the proper way to evaluate patches - it:
+        1. Creates a fresh container
+        2. Checks out the correct commit with test files
+        3. Applies the patch
+        4. Runs the appropriate tests
+        5. Cleans up
+        
+        Args:
+            patch: The git diff patch to apply and test
+            f2p_only: If True, only run FAIL_TO_PASS tests
+            timeout: Test timeout in seconds
+            
+        Returns:
+            (passed, test_output) tuple
         """
+        if not self.current_task:
+            return False, "No task set up"
+        
+        instance_id = self.current_task.get(KEY_INSTANCE_ID, "unknown")
+        run_id = f"gepa_{uuid.uuid4().hex[:8]}"
+        # IMPORTANT: Use RUN_EVALUATION_LOG_DIR to trigger is_eval=True in run_patch_in_container
+        # This makes it do `git checkout HEAD~1` to restore test files
+        log_dir = RUN_EVALUATION_LOG_DIR
+        
         try:
-            proc = subprocess.run(
-                test_cmd,
-                cwd=self.workspace_root,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120  # Allow 2 minutes for larger test suites
+            result = run_patch_in_container(
+                instance=self.current_task,
+                run_id=run_id,
+                log_dir=log_dir,
+                timeout=timeout,
+                patch=patch if patch.strip() else None,
+                commit=instance_id,  # Checkout the instance branch
+                f2p_only=f2p_only,
+                is_gold=False,  # We're testing a fix, not the gold solution
             )
-
-            # Combine stdout and stderr for full diagnostic output
-            test_output = f"=== TEST COMMAND: {test_cmd} ===\n"
-            test_output += f"=== RETURN CODE: {proc.returncode} ===\n\n"
-
-            if proc.stdout:
-                test_output += "=== STDOUT ===\n" + proc.stdout + "\n"
-            if proc.stderr:
-                test_output += "=== STDERR ===\n" + proc.stderr + "\n"
-
-            passed = proc.returncode == 0
+            
+            if result is None:
+                return False, "run_patch_in_container returned None (error occurred)"
+            
+            logger, timed_out = result
+            
+            # Read the test output from the log file
+            test_output_file = Path(log_dir) / run_id / instance_id / LOG_TEST_OUTPUT
+            if test_output_file.exists():
+                test_output = test_output_file.read_text()
+            else:
+                test_output = "Test output file not found"
+            
+            # Parse test results - check for failures in the output
+            # SWE-smith uses pytest, so we look for standard pytest markers
+            passed = not timed_out and "FAILED" not in test_output and "ERROR" not in test_output
+            
+            # Also check exit code from the log if available
+            if "PASSED" in test_output or "passed" in test_output.lower():
+                passed = True
+            
             return passed, test_output
-
-        except subprocess.TimeoutExpired:
-            return False, f"TEST TIMEOUT: Command '{test_cmd}' exceeded 60 second limit"
+            
+        except Exception as e:
+            import traceback
+            return False, f"Verification error: {e}\n{traceback.format_exc()}"
 
     def cleanup(self):
-        """Cleanup after run."""
-        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=self.workspace_root, check=False)
-        subprocess.run(["git", "checkout", "-f", "master"], cwd=self.workspace_root, check=False)
+        """Cleanup Docker container after run."""
+        if self.container:
+            try:
+                self.container.stop()
+                self.container.remove()
+                self.container = None
+            except Exception as e:
+                print(f"  WARNING: Failed to cleanup container: {e}")

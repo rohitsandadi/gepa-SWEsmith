@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/shell.py b/pygments/lexers/shell.py\nindex 8f074c97..e84f2981 100644\n--- a/pygments/lexers/shell.py\n+++ b/pygments/lexers/shell.py\n@@ -362,8 +362,9 @@ class BatchLexer(RegexLexer):\n         if compound:\n             state.append((r'(?=\\))', Text, '#pop'))\n         state += [\n-            (rf'{_start_label}([{_ws}]*)({_label_compound if compound else _label})(.*)',\n-             bygroups(Text, Punctuation, Text, Name.Label, Comment.Single)),\n+            (r'(:)(:.*)$', bygroups(Punctuation, Comment.Single), '#pop'),\n+            (rf'({_label_compound if compound else _label})([{_ws}]*){_start_label}({_label_compound if compound else _label})(.*)',\n+             bygroups(Name.Label, Text, Text, Punctuation, Name.Label, Text)),\n             include(f'redirect{suffix}'),\n             (rf'(?=[{_nl}])', Text, '#pop'),\n             (r'\\|\\|?|&&?', Punctuation, '#pop'),\n",
-    "success": false,
-    "steps": 30,
-    "estimated_tokens": 21565
-}

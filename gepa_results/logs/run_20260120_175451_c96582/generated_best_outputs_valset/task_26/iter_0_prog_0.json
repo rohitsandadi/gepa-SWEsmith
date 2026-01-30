@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/objective.py b/pygments/lexers/objective.py\nindex b37a9d40..ee9d2be6 100644\n--- a/pygments/lexers/objective.py\n+++ b/pygments/lexers/objective.py\n@@ -274,13 +274,15 @@ class LogosLexer(ObjectiveCppLexer):\n     }\n \n     _logos_keywords = re.compile(r'%(?:hook|ctor|init|c\\()')\n-\n     def analyse_text(text):\n-        if LogosLexer._logos_keywords.search(text):\n-            return 1.0\n-        return 0\n-\n-\n+        # Logos (Theos) uses distinctive directives that begin with '%'.\n+        # Only return a high confidence when those directives are present,\n+        # otherwise do not match at all to avoid stealing plain C/ObjC.\n+        if re.search(r'^\\s*%(?:hook|subclass|group|ctor|dtor|init|config|new)\\b', text, re.M):\n+            return 0.95\n+        if re.search(r'\\B%(?:orig|log|c)\\b', text):\n+            return 0.8\n+        return 0.0\n class SwiftLexer(RegexLexer):\n     \"\"\"\n     For Swift source.\n",
-    "success": false,
-    "steps": 28,
-    "estimated_tokens": 16989
-}

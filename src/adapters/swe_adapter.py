@@ -18,11 +18,9 @@ RolloutOutput = Dict[str, Any] # Patch and status
 class SWEAdapter:
     def __init__(
         self, 
-        workspace_root: str = "/tmp/gepa_workenvs/pygments", 
         model_name: str = "gpt-4o",
         n_workers: int = 6
     ):
-        self.workspace_root = workspace_root
         self.model_name = model_name
         self.n_workers = n_workers
         self.propose_new_texts = None  # Default GEPA proposer
@@ -32,14 +30,14 @@ class SWEAdapter:
         self.iteration_count = 0  # Track GEPA iterations for logging
         
         # Create harness pool - one per worker
-        self.harness_pool = []
-        for i in range(n_workers):
-            worker_workspace = f"{workspace_root}_{i}"
-            self.harness_pool.append(SWEHarness(workspace_root=worker_workspace))
+        # Each harness will create Docker containers on demand
+        self.harness_pool = [SWEHarness() for _ in range(n_workers)]
         
         # Track which harnesses are available
         self._harness_available = [True] * n_workers
         self._harness_lock = threading.Lock()
+        
+        print(f"Initialized SWEAdapter with {n_workers} workers (Docker mode)")
 
     def _get_harness(self) -> tuple[int, SWEHarness]:
         """Get an available harness from the pool."""
@@ -59,7 +57,7 @@ class SWEAdapter:
     def _process_single_task(
         self,
         task: DataInst,
-        system_prompt: str,
+        skills: str,
         capture_traces: bool,
         task_idx: int,
         total_tasks: int
@@ -77,23 +75,14 @@ class SWEAdapter:
             instance_id = task.get('instance_id', 'unknown')[:50]
             print(f"[Task {task_idx+1}/{total_tasks}] {instance_id}...", flush=True)
             
-            # 1. Setup Environment
-            base_commit = task.get("base_commit")
-            if not base_commit:
-                repo_field = task.get("repo", "")
-                if "." in repo_field:
-                    base_commit = repo_field.split(".")[-1]
-                else:
-                    print(f"  WARNING: Could not determine base commit. Using HEAD.")
-                    base_commit = "master"
-            
-            bug_patch = task.get("patch", "")
-            harness.setup_task(base_commit, bug_patch=bug_patch)
+            # 1. Setup Docker Container
+            # SWE-smith creates a container with the bug already applied
+            harness.setup_task(task_instance=task)
 
             # 2. Run Agent
             problem = task["problem_statement"]
             patch, agent_reasoning_trace, agent_metrics = harness.run_agent(
-                problem, system_prompt, model_name=self.model_name
+                problem, skills, model_name=self.model_name
             )
 
             # 3. Verify with tests
@@ -107,14 +96,8 @@ class SWEAdapter:
                 feedback_msg = "Agent did not produce any valid patch (git diff was empty)."
                 test_verification_output = "No patch to test."
             else:
-                # FAIL_TO_PASS Tests
-                fail_to_pass = task.get("FAIL_TO_PASS", [])
-                if fail_to_pass:
-                    fail_test_cmd = f"pytest {' '.join(fail_to_pass)} -v"
-                else:
-                    fail_test_cmd = "pytest"
-                
-                f2p_passed, f2p_output = harness.verify(test_cmd=fail_test_cmd)
+                # Use SWE-smith's run_patch_in_container for proper verification
+                f2p_passed, f2p_output = harness.verify_with_patch(patch, f2p_only=True)
                 test_verification_output = f"=== FAIL_TO_PASS TESTS ===\n{f2p_output}"
                 
                 if not f2p_passed:
@@ -125,12 +108,9 @@ class SWEAdapter:
                     pass_to_pass = task.get("PASS_TO_PASS", [])
                     
                     if pass_to_pass:
-                        sample_size = min(10, len(pass_to_pass))
-                        sampled_tests = pass_to_pass[:sample_size]
-                        pass_test_cmd = f"pytest {' '.join(sampled_tests)} -v"
-                        
-                        p2p_passed, p2p_output = harness.verify(test_cmd=pass_test_cmd)
-                        test_verification_output += f"\n\n=== PASS_TO_PASS TESTS (sampled {sample_size}/{len(pass_to_pass)}) ===\n{p2p_output}"
+                        # Run full test (includes both f2p and p2p)
+                        p2p_passed, p2p_output = harness.verify_with_patch(patch, f2p_only=False)
+                        test_verification_output += f"\n\n=== FULL TEST SUITE ===\n{p2p_output}"
                         
                         if not p2p_passed:
                             passed = False
@@ -184,7 +164,7 @@ class SWEAdapter:
         scores: List[float] = []
         trajectories: List[Trajectory] | None = [] if capture_traces else None
         
-        system_prompt = candidate.get("system_prompt", "You are a helpful software engineering assistant.")
+        skills = candidate.get("skills", "")
 
         print(f"\n{'='*70}")
         print(f"Evaluating batch of {len(batch)} tasks with {self.n_workers} workers...")
@@ -198,7 +178,7 @@ class SWEAdapter:
             future_to_idx = {
                 executor.submit(
                     self._process_single_task,
-                    task, system_prompt, capture_traces, i, len(batch)
+                    task, skills, capture_traces, i, len(batch)
                 ): i
                 for i, task in enumerate(batch)
             }
@@ -234,7 +214,7 @@ class SWEAdapter:
             task_ids = [task.get("instance_id", f"task_{i}") for i, task in enumerate(batch)]
             is_baseline = self.iteration_count == 0
             logger.log_eval_batch(
-                prompt=system_prompt,
+                prompt=skills,
                 outputs=outputs,
                 scores=scores,
                 task_ids=task_ids,
@@ -267,7 +247,7 @@ class SWEAdapter:
         updates = []
 
         if not eval_batch.trajectories:
-            return {"system_prompt": []}
+            return {"skills": []}
 
         for i, traj in enumerate(eval_batch.trajectories):
             # Skip None trajectories (from tasks that threw exceptions)
@@ -299,11 +279,11 @@ class SWEAdapter:
         # Log proposer input for analysis
         logger = get_logger()
         if logger and updates:
-            current_prompt = candidate.get("system_prompt", "")
+            current_skills = candidate.get("skills", "")
             logger.log_proposer_input(
                 iteration=self.iteration_count,
-                current_prompt=current_prompt,
+                current_prompt=current_skills,
                 reflection_records=updates
             )
 
-        return {"system_prompt": updates}
+        return {"skills": updates}

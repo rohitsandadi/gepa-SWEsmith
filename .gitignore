@@ -65,3 +65,7 @@ data/*.json
 # ----- Archive (optional - uncomment to ignore) -----
 # archive/
 archive/
+gepa_results/
+
+logs/
+wandb/

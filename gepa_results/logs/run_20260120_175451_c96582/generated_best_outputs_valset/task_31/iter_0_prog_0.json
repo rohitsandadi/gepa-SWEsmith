@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/erlang.py b/pygments/lexers/erlang.py\nindex 11901823..13f10178 100644\n--- a/pygments/lexers/erlang.py\n+++ b/pygments/lexers/erlang.py\n@@ -300,6 +300,7 @@ class ElixirLexer(RegexLexer):\n         states = {'sigils': []}\n \n         for term, name in triquotes:\n+            # Keep `[a-z]` and `[A-Z]` explicit: `[a-Z]` is an invalid regex range in Python and breaks compilation.\n             states['sigils'] += [\n                 (rf'(~[a-z])({term})', bygroups(token, String.Heredoc),\n                     (name + '-end', name + '-intp')),\n",
-    "success": false,
-    "steps": 23,
-    "estimated_tokens": 9737
-}

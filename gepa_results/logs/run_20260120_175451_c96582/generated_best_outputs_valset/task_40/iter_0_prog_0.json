@@ -1,6 +1,0 @@
-{
-    "patch": "diff --git a/pygments/lexers/ruby.py b/pygments/lexers/ruby.py\nindex 134ff779..919070bb 100644\n--- a/pygments/lexers/ruby.py\n+++ b/pygments/lexers/ruby.py\n@@ -61,7 +61,7 @@ class RubyLexer(ExtendedRegexLexer):\n             yield from self.get_tokens_unprocessed(context=ctx)\n         else:\n             yield ctx.pos, String.Heredoc, match.group(5)\n-        ctx.pos = match.end()\n+        ctx.pos = ctx.end\n \n         if outermost:\n             # this is the outer heredoc again, now we can process them all\ndiff --git a/tests/test_ruby.py b/tests/test_ruby.py\nindex bfa06eb6..a24f10f0 100644\n--- a/tests/test_ruby.py\n+++ b/tests/test_ruby.py\n@@ -8,7 +8,7 @@\n \n import pytest\n \n-from pygments.token import Name\n+from pygments.token import Name, String\n from pygments.lexers.ruby import RubyLexer\n \n \n@@ -51,3 +51,13 @@ def test_negative_method_names(lexer, method_name):\n \n     text = 'def ' + method_name\n     assert list(lexer.get_tokens(text))[-2] != (Name.Function, method_name)\n+\n+\n+def test_basic_heredoc_does_not_hang(lexer):\n+    code = \"\"\"\\\n+<<EOF\n+some content\n+EOF\n+\"\"\"\n+    tokens = list(lexer.get_tokens(code))\n+    assert (String.Delimiter, 'EOF') in tokens\n",
-    "success": false,
-    "steps": 21,
-    "estimated_tokens": 10416
-}
