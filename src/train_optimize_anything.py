@@ -30,6 +30,53 @@ import re
 import litellm
 
 
+class TeeOutput:
+    """Duplicate stdout/stderr to both terminal and a log file."""
+    
+    def __init__(self, log_path: Path):
+        self.log_path = log_path
+        self.log_file = None
+        self.original_stdout = None
+        self.original_stderr = None
+        
+    def start(self):
+        """Start capturing output."""
+        self.log_file = open(self.log_path, 'w', buffering=1)  # Line buffered
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        sys.stdout = self._TeeStream(self.original_stdout, self.log_file)
+        sys.stderr = self._TeeStream(self.original_stderr, self.log_file)
+        print(f"[Logging terminal output to: {self.log_path}]")
+        
+    def stop(self):
+        """Stop capturing and restore original streams."""
+        if self.original_stdout:
+            sys.stdout = self.original_stdout
+        if self.original_stderr:
+            sys.stderr = self.original_stderr
+        if self.log_file:
+            self.log_file.close()
+            
+    class _TeeStream:
+        """Stream wrapper that writes to both original stream and file."""
+        def __init__(self, original, log_file):
+            self.original = original
+            self.log_file = log_file
+            
+        def write(self, data):
+            self.original.write(data)
+            self.original.flush()
+            self.log_file.write(data)
+            self.log_file.flush()
+            
+        def flush(self):
+            self.original.flush()
+            self.log_file.flush()
+            
+        def fileno(self):
+            return self.original.fileno()
+
+
 def create_logging_proposer(run_dir: Path, reflection_lm: str):
     """Create a proposer that logs all inputs/outputs to separate files."""
     
@@ -271,6 +318,11 @@ def main():
     set_logger(exp_logger)
     run_dir = exp_logger.log_dir
 
+    # Setup output tee - capture all stdout/stderr to terminal.log
+    terminal_log = run_dir / "terminal.log"
+    tee = TeeOutput(terminal_log)
+    tee.start()
+    
     # Setup Python logging
     log_file = run_dir / "training.log"
     logging.basicConfig(
@@ -354,6 +406,7 @@ def main():
         "project": args.wandb_project,
         "name": run_dir.name,
         "config": {
+            "repo": args.repo,
             "model": args.model,
             "reflection_model": reflection_model,
             "train_size": len(train_data),
@@ -490,6 +543,9 @@ def main():
     print("\n" + "="*70)
     print("Done!")
     print("="*70 + "\n")
+    
+    # Stop tee logging
+    tee.stop()
 
 if __name__ == "__main__":
     main()

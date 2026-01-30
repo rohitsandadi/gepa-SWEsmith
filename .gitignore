@@ -68,3 +68,4 @@ archive/
 gepa_results/
 
 logs/
+wandb/
