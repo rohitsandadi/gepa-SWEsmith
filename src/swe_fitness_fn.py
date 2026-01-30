@@ -79,30 +79,21 @@ def create_swe_fitness_fn(model_name: str = "gpt-4o", n_workers: int = 6):
                 feedback_msg = "no_patch"
                 test_output = "No patch to test."
             else:
-                # FAIL_TO_PASS Tests
-                fail_to_pass = task.get("FAIL_TO_PASS", [])
-                if fail_to_pass:
-                    fail_test_cmd = f"pytest {' '.join(fail_to_pass)} -v"
-                else:
-                    fail_test_cmd = "pytest"
-                
-                f2p_passed, f2p_output = harness.verify(test_cmd=fail_test_cmd)
+                # FAIL_TO_PASS Tests - use repo profile's test command
+                f2p_passed, f2p_output = harness.verify(f2p_only=True)
                 test_output = f"=== FAIL_TO_PASS TESTS ===\n{f2p_output}"
                 
                 if not f2p_passed:
                     passed = False
                     feedback_msg = "f2p_failed"
                 else:
-                    # PASS_TO_PASS Tests (Regression Check)
+                    # PASS_TO_PASS Tests (Regression Check) - run full test suite
                     pass_to_pass = task.get("PASS_TO_PASS", [])
                     
                     if pass_to_pass:
-                        sample_size = min(10, len(pass_to_pass))
-                        sampled_tests = pass_to_pass[:sample_size]
-                        pass_test_cmd = f"pytest {' '.join(sampled_tests)} -v"
-                        
-                        p2p_passed, p2p_output = harness.verify(test_cmd=pass_test_cmd)
-                        test_output += f"\n\n=== PASS_TO_PASS TESTS (sampled {sample_size}/{len(pass_to_pass)}) ===\n{p2p_output}"
+                        # Run full test command (includes both f2p and p2p)
+                        p2p_passed, p2p_output = harness.verify(f2p_only=False)
+                        test_output += f"\n\n=== FULL TEST SUITE ===\n{p2p_output}"
                         
                         if not p2p_passed:
                             passed = False

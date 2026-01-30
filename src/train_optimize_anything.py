@@ -119,7 +119,7 @@ Provide the new skills within ``` blocks."""
                 response = litellm.completion(
                     model=reflection_lm,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7,
+                    drop_params=True,  # Let litellm drop unsupported params like temperature for gpt-5
                 )
                 response_text = response.choices[0].message.content
                 

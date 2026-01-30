@@ -56,6 +56,8 @@ class SWEHarness:
     def __init__(self):
         """Initialize harness with SWE-smith Docker containers."""
         self.container = None
+        self.repo_profile = None
+        self.current_task = None
         
         # Set DOCKER_HOST environment variable for rootless Docker
         # This ensures SWE-smith's internal docker.from_env() calls work correctly
@@ -110,8 +112,9 @@ class SWEHarness:
         # - Correct commit checked out
         # - Bug patch already applied
         # - All dependencies installed
-        rp = registry.get_from_inst(task_instance)
-        self.container = rp.get_container(task_instance)
+        self.repo_profile = registry.get_from_inst(task_instance)
+        self.current_task = task_instance
+        self.container = self.repo_profile.get_container(task_instance)
         print(f"  Docker container created: {self.container.id[:12]}")
         
         # Debug: Verify container is running and accessible
@@ -220,8 +223,26 @@ class SWEHarness:
             gc.collect()  # Clean up even on error
             return "", f"Agent crashed: {str(e)}\n\nTraceback:\n{error_trace}", {"steps": 0, "estimated_tokens": 0, "num_messages": 0}
 
-    def verify(self, test_cmd: str = "pytest") -> Tuple[bool, str]:
+    def get_test_cmd(self, f2p_only: bool = False) -> str:
+        """Get the proper test command from the repo profile.
+        
+        This uses SWE-smith's repo profile which knows how to:
+        - Activate the correct conda environment
+        - Run the right test framework (pytest, cargo test, npm test, etc.)
+        - Pass the correct test files
+        """
+        if self.repo_profile and self.current_task:
+            test_cmd, _ = self.repo_profile.get_test_cmd(self.current_task, f2p_only=f2p_only)
+            return test_cmd
+        # Fallback for Python repos
+        return "source /opt/miniconda3/bin/activate; conda activate testbed; python -m pytest -v"
+
+    def verify(self, test_cmd: str = None, f2p_only: bool = False) -> Tuple[bool, str]:
         """Run verification tests in Docker container and return (passed, output).
+
+        Args:
+            test_cmd: Optional custom test command. If None, uses repo profile's test command.
+            f2p_only: If True and test_cmd is None, only run FAIL_TO_PASS tests.
 
         Returns both the pass/fail status and the full test output,
         which has info like:
@@ -230,9 +251,14 @@ class SWEHarness:
         - Compilation errors
         - Expected vs actual values
         """
-        # Run tests in Docker container
+        # Get test command from repo profile if not provided
+        if test_cmd is None:
+            test_cmd = self.get_test_cmd(f2p_only=f2p_only)
+        
+        # Run tests in Docker container using bash shell
+        # This is needed because test_cmd may contain shell commands like 'source' and ';'
         result = self.container.exec_run(
-            test_cmd,
+            ["bash", "-c", test_cmd],
             workdir="/testbed",
             demux=True,  # Separate stdout/stderr
         )
