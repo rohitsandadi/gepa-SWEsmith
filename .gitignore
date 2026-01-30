@@ -66,3 +66,5 @@ data/*.json
 # archive/
 archive/
 gepa_results/
+
+logs/

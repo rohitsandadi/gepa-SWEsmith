@@ -154,58 +154,102 @@ Provide the new skills within ``` blocks."""
     
     return logging_proposer
 
-def load_split_data(split_name="train", limit=None):
+import random
+
+def load_and_split_data(repo: str, train_size: int, val_size: int, test_size: int, seed: int = 42):
     """
-    Load pre-split dataset from data/ directory.
-    If split doesn't exist, will fall back to direct HuggingFace load.
+    Load data directly from HuggingFace and split into train/val/test.
+    
+    Args:
+        repo: Repository name to filter (e.g., "pygments__pygments" or "swesmith/pygments__pygments")
+        train_size: Number of training examples
+        val_size: Number of validation examples
+        test_size: Number of test examples
+        seed: Random seed for shuffling
+        
+    Returns:
+        (train_data, val_data, test_data) tuple
     """
-    data_file = Path("data") / f"pygments_{split_name}.json"
-
-    if data_file.exists():
-        print(f"Loading {split_name} split from {data_file}...")
-        with open(data_file) as f:
-            data = json.load(f)
-
-        if limit:
-            data = data[:limit]
-
-        print(f"Loaded {len(data)} tasks from {split_name} split")
-        return data
-    else:
-        print(f"WARNING: Pre-split data not found at {data_file}")
-        print(f"Falling back to direct HuggingFace load. Run 'python split_dataset.py' to create splits.")
-        return load_pygments_data_direct(limit=limit or 10)
-
-def load_pygments_data_direct(limit=10):
-    """Fallback: Load from HuggingFace if pre-split data not available."""
-    print(f"Loading {limit} Pygments examples from SWE-smith...")
+    total_needed = train_size + val_size + test_size
+    print(f"Loading {repo} data from HuggingFace SWE-smith (need {total_needed})...")
     ds = load_dataset("SWE-bench/SWE-smith", split="train")
-
-    data = []
-    count = 0
-    target_repo = "swesmith/pygments__pygments"
-
+    
+    # Normalize repo name for matching
+    # Handle both "pygments__pygments" and "swesmith/pygments__pygments"
+    repo_pattern = repo if "/" in repo else f"swesmith/{repo}"
+    
+    all_data = []
     for item in ds:
         repo_name = item.get('repo', '')
-        if target_repo in repo_name:
-            data.append(item)
-            count += 1
-            if count >= limit:
+        if repo_pattern in repo_name:
+            all_data.append(dict(item))
+            if len(all_data) >= total_needed:
                 break
-    return data
+    
+    print(f"Loaded {len(all_data)} {repo} examples")
+    
+    # Shuffle with seed
+    random.seed(seed)
+    random.shuffle(all_data)
+    
+    # Calculate split sizes
+    total_needed = train_size + val_size + test_size
+    if len(all_data) < total_needed:
+        print(f"WARNING: Only {len(all_data)} examples available, need {total_needed}")
+        # Scale down proportionally
+        ratio = len(all_data) / total_needed
+        train_size = int(train_size * ratio)
+        val_size = int(val_size * ratio)
+        test_size = len(all_data) - train_size - val_size
+    
+    # Split
+    train_data = all_data[:train_size]
+    val_data = all_data[train_size:train_size + val_size]
+    test_data = all_data[train_size + val_size:train_size + val_size + test_size]
+    
+    print(f"Split: {len(train_data)} train, {len(val_data)} val, {len(test_data)} test")
+    
+    return train_data, val_data, test_data
+
+
+def evaluate_on_test(fitness_fn, candidate: dict, test_data: list, name: str = "Test"):
+    """Evaluate a candidate on test data and return results."""
+    print(f"\n{'='*70}")
+    print(f"Evaluating {name}...")
+    print(f"{'='*70}")
+    
+    results = fitness_fn(candidate, test_data)
+    
+    scores = [r[0] for r in results]
+    avg_score = sum(scores) / len(scores) if scores else 0.0
+    pass_count = sum(1 for s in scores if s == 1.0)
+    
+    print(f"\n{name} Results:")
+    print(f"  Pass rate: {pass_count}/{len(test_data)} ({avg_score:.1%})")
+    
+    return {
+        "avg_score": avg_score,
+        "pass_count": pass_count,
+        "total": len(test_data),
+        "scores": scores
+    }
 
 def main():
     parser = argparse.ArgumentParser(
         description="GEPA optimization using optimize_anything API (recommended)"
     )
+    parser.add_argument("--repo", type=str, default="pygments__pygments",
+                        help="Repository to train on (e.g., 'pygments__pygments', 'django__django')")
     parser.add_argument("--train-size", type=int, default=200, help="Number of training examples")
     parser.add_argument("--val-size", type=int, default=50, help="Number of validation examples for Pareto selection")
-    parser.add_argument("--model", type=str, default="gpt-5.2",
-                        help="Agent model for running tasks (default: gpt-5.2)")
+    parser.add_argument("--test-size", type=int, default=100, help="Number of test examples for final evaluation")
+    parser.add_argument("--model", type=str, default="gpt-5-mini",
+                        help="Agent model for running tasks (default: gpt-5-mini)")
     parser.add_argument("--reflection-model", type=str, default="gpt-5.2-pro",
                         help="Model for GEPA reflection/prompt optimization (default: gpt-5.2-pro)")
     parser.add_argument("--smoke-test", action="store_true", help="Run a quick smoke test")
-    parser.add_argument("--use-split", action="store_true", help="Use pre-split train data from data/ directory")
+    parser.add_argument("--eval-test", action="store_true", 
+                        help="Evaluate on test set before and after optimization")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--timeout", type=int, default=43200, help="Max seconds to run (default: 12 hours)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -216,8 +260,9 @@ def main():
     args = parser.parse_args()
 
     if args.smoke_test:
-        args.train_size = 2
+        args.train_size = 3
         args.val_size = 2
+        args.test_size = 2
         args.max_metric_calls = 20
         print("SMOKE TEST MODE")
 
@@ -244,26 +289,24 @@ def main():
     print("\n" + "="*70)
     print("GEPA + SWE-smith Training (optimize_anything API)")
     print("="*70)
+    print(f"Repository: {args.repo}")
     print(f"Model: {args.model}")
     print(f"Reflection Model: {args.reflection_model}")
     print(f"Workers: {args.workers} (Docker containers)")
     print(f"Run directory: {run_dir}")
     print("="*70 + "\n")
 
-    # 1. Load Data
-    if args.use_split:
-        train_data = load_split_data("train", limit=args.train_size)
-        val_data = load_split_data("val", limit=args.val_size)
-    else:
-        data = load_pygments_data_direct(limit=args.train_size + args.val_size)
-        train_data = data[:args.train_size]
-        val_data = data[args.train_size:args.train_size + args.val_size]
-        
-        if len(val_data) < args.val_size:
-            val_data = train_data[:min(args.val_size, len(train_data))]
-
-    print(f"Loaded {len(train_data)} training, {len(val_data)} validation examples.")
-    logger.info(f"Training data size: {len(train_data)}, Validation size: {len(val_data)}")
+    # 1. Load Data - directly from HuggingFace, split with shuffle
+    train_data, val_data, test_data = load_and_split_data(
+        repo=args.repo,
+        train_size=args.train_size,
+        val_size=args.val_size,
+        test_size=args.test_size,
+        seed=args.seed
+    )
+    
+    print(f"Data splits: {len(train_data)} train, {len(val_data)} val, {len(test_data)} test")
+    logger.info(f"Data: train={len(train_data)}, val={len(val_data)}, test={len(test_data)}")
 
     # Determine reflection model
     reflection_model = args.reflection_model or args.model
@@ -271,15 +314,17 @@ def main():
     # Save experiment config
     exp_logger.save_config({
         "api": "optimize_anything",
+        "repo": args.repo,
         "model": args.model,
         "reflection_model": reflection_model,
         "train_size": len(train_data),
         "val_size": len(val_data),
+        "test_size": len(test_data),
         "max_metric_calls": args.max_metric_calls,
         "workers": args.workers,
         "seed": args.seed,
         "timeout": args.timeout,
-        "use_split": args.use_split,
+        "eval_test": args.eval_test,
         "execution_mode": "docker",
         "wandb": args.wandb,
         "wandb_project": args.wandb_project if args.wandb else None,
@@ -346,7 +391,17 @@ def main():
         stop_callbacks=stop_callbacks,
     )
 
-    # 6. Run GEPA
+    # 6. Baseline evaluation (before optimization)
+    baseline_test_results = None
+    if args.eval_test:
+        baseline_test_results = evaluate_on_test(
+            fitness_fn, seed_candidate, test_data, name="Baseline (before optimization)"
+        )
+        # Save baseline results
+        with open(run_dir / "baseline_test_results.json", "w") as f:
+            json.dump(baseline_test_results, f, indent=2)
+    
+    # 7. Run GEPA
     print("\n" + "="*70)
     print("Starting GEPA Optimization (optimize_anything API)...")
     print("="*70 + "\n")
@@ -390,20 +445,50 @@ def main():
     print(f"\nBest skills saved to: {skills_file}")
     print(f"Full results in: {run_dir}")
     
+    # 9. Post-optimization test evaluation
+    optimized_test_results = None
+    if args.eval_test:
+        optimized_candidate = {"skills": best_skills}
+        optimized_test_results = evaluate_on_test(
+            fitness_fn, optimized_candidate, test_data, name="Optimized (after optimization)"
+        )
+        # Save optimized results
+        with open(run_dir / "optimized_test_results.json", "w") as f:
+            json.dump(optimized_test_results, f, indent=2)
+        
+        # Print comparison
+        if baseline_test_results:
+            print("\n" + "="*70)
+            print("TEST SET COMPARISON")
+            print("="*70)
+            print(f"  Baseline:  {baseline_test_results['pass_count']}/{baseline_test_results['total']} ({baseline_test_results['avg_score']:.1%})")
+            print(f"  Optimized: {optimized_test_results['pass_count']}/{optimized_test_results['total']} ({optimized_test_results['avg_score']:.1%})")
+            improvement = optimized_test_results['avg_score'] - baseline_test_results['avg_score']
+            print(f"  Improvement: {improvement:+.1%}")
+            print("="*70)
+    
     # Summary
-    exp_logger.save_summary({
+    summary_data = {
         "best_score": float(best_score),
         "total_iterations": len(result.history),
         "final_skills_length": len(best_skills),
-    })
+    }
+    if baseline_test_results:
+        summary_data["baseline_test_score"] = baseline_test_results['avg_score']
+    if optimized_test_results:
+        summary_data["optimized_test_score"] = optimized_test_results['avg_score']
+    
+    exp_logger.save_summary(summary_data)
     
     print(f"\nSummary:")
-    print(f"  Best Score: {best_score:.2%}")
+    print(f"  Best Val Score: {best_score:.2%}")
     print(f"  Total Iterations: {len(result.history)}")
     print(f"  Final Skills Length: {len(best_skills)} chars")
+    if optimized_test_results:
+        print(f"  Test Score: {optimized_test_results['avg_score']:.1%}")
     
     print("\n" + "="*70)
-    print("Done! 🎉")
+    print("Done!")
     print("="*70 + "\n")
 
 if __name__ == "__main__":

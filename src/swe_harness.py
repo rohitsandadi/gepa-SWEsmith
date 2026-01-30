@@ -21,7 +21,7 @@ from minisweagent.environments.docker import DockerEnvironment, DockerEnvironmen
 
 from swesmith.profiles import registry
 from swesmith.harness.utils import run_patch_in_container
-from swebench.harness.constants import KEY_INSTANCE_ID, LOG_TEST_OUTPUT
+from swebench.harness.constants import KEY_INSTANCE_ID, LOG_TEST_OUTPUT, RUN_EVALUATION_LOG_DIR
 import docker
 
 
@@ -246,7 +246,9 @@ class SWEHarness:
         
         instance_id = self.current_task.get(KEY_INSTANCE_ID, "unknown")
         run_id = f"gepa_{uuid.uuid4().hex[:8]}"
-        log_dir = Path("gepa_results/eval_logs")
+        # IMPORTANT: Use RUN_EVALUATION_LOG_DIR to trigger is_eval=True in run_patch_in_container
+        # This makes it do `git checkout HEAD~1` to restore test files
+        log_dir = RUN_EVALUATION_LOG_DIR
         
         try:
             result = run_patch_in_container(
@@ -266,7 +268,7 @@ class SWEHarness:
             logger, timed_out = result
             
             # Read the test output from the log file
-            test_output_file = log_dir / run_id / instance_id / LOG_TEST_OUTPUT
+            test_output_file = Path(log_dir) / run_id / instance_id / LOG_TEST_OUTPUT
             if test_output_file.exists():
                 test_output = test_output_file.read_text()
             else:
