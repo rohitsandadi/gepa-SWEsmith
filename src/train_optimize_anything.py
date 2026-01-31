@@ -143,7 +143,7 @@ Provide the new skills within a SINGLE ``` block. Only include one ``` block, if
         for component in components_to_update:
             curr_value = candidate.get(component, "")
             side_info = reflective_dataset.get(component, [])
-            
+              
             # Format side info as string
             side_info_str = json.dumps(side_info, indent=2, default=str)
             
@@ -296,10 +296,12 @@ def main():
     parser.add_argument("--reflection-model", type=str, default="gpt-5.2-pro",
                         help="Model for GEPA reflection/prompt optimization (default: gpt-5.2-pro)")
     parser.add_argument("--smoke-test", action="store_true", help="Run a quick smoke test")
-    parser.add_argument("--eval-test", action="store_true", 
-                        help="Evaluate on test set before and after optimization")
+    parser.add_argument("--run-post-optimization-testset", action="store_true", 
+                        help="Evaluate on test set after optimization")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from a previous run directory (e.g., gepa_results/logs/run_XXXXXXXX)")
+    parser.add_argument("--run-pre-optimization-testset", action="store_true", help="run the agent on the test set before optimization")
+    parser.add_argument("--run-testset", action="store_true", help="run the agent on the test set before and after optimization")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--timeout", type=int, default=43200, help="Max seconds to run (default: 12 hours)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -343,7 +345,7 @@ def main():
         resumed_from = str(resume_dir)
 
     # Initialize experiment logger FIRST to get run_id
-    exp_logger = ExperimentLogger(log_dir="gepa_results/logs")
+    exp_logger = ExperimentLogger(log_dir="gepa_results/logs", repo=args.repo)
     set_logger(exp_logger)
     run_dir = exp_logger.log_dir
     
@@ -415,8 +417,9 @@ def main():
         "workers": args.workers,
         "seed": args.seed,
         "timeout": args.timeout,
-        "eval_test": args.eval_test,
         "resumed_from": resumed_from,
+        "run_pre_optimization_testset": args.run_pre_optimization_testset,
+        "run_post_optimization_testset": args.run_post_optimization_testset,
         "execution_mode": "docker",
         "wandb": args.wandb,
         "wandb_project": args.wandb_project if args.wandb else None,
@@ -486,7 +489,7 @@ def main():
 
     # 6. Baseline evaluation (before optimization)
     baseline_test_results = None
-    if args.eval_test and not resumed_from:
+    if args.run_pre_optimization_testset or args.run_testset:
         baseline_test_results = evaluate_on_test(
             fitness_fn, seed_candidate, test_data, name="Baseline (before optimization)"
         )
@@ -542,7 +545,7 @@ def main():
     
     # 9. Post-optimization test evaluation
     optimized_test_results = None
-    if args.eval_test:
+    if args.run_post_optimization_testset or args.run_testset:
         optimized_candidate = {"skills": best_skills}
         optimized_test_results = evaluate_on_test(
             fitness_fn, optimized_candidate, test_data, name="Optimized (after optimization)"

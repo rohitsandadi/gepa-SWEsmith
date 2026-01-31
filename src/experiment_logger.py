@@ -83,12 +83,20 @@ class ExperimentLogger:
     Each run gets its own folder: logs/run_YYYYMMDD_HHMMSS_<short_uuid>/
     """
 
-    def __init__(self, log_dir: str = "gepa_results/logs", run_name: str = None):
+    def __init__(self, log_dir: str = "gepa_results/logs", run_name: str = None, repo: str = None):
         # Generate unique run ID
         self.start_time = datetime.now()
         timestamp = self.start_time.strftime("%Y%m%d_%H%M%S")
         short_id = uuid.uuid4().hex[:6]
-        self.run_id = run_name or f"run_{timestamp}_{short_id}"
+        
+        if run_name:
+            self.run_id = run_name
+        elif repo:
+            # Extract short repo name (e.g., "pygments" from "pygments__pygments")
+            short_repo = repo.split("__")[0] if "__" in repo else repo.split("/")[-1]
+            self.run_id = f"run_{short_repo}_{timestamp}_{short_id}"
+        else:
+            self.run_id = f"run_{timestamp}_{short_id}"
 
         # Create run-specific directory
         self.base_log_dir = Path(log_dir)
