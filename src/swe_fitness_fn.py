@@ -13,20 +13,26 @@ import threading
 from src.swe_harness import SWEHarness
 
 
-def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, config_path: str = None):
+def create_swe_fitness_fn(
+    model_name: str = "gpt-5-mini",
+    n_workers: int = 6,
+    config_path: str = None,
+    agent_type: str = "minisweagent",
+):
     """Create a fitness function for SWE tasks with Docker containers.
     
     Args:
-        model_name: LiteLLM model name
+        model_name: LiteLLM model name (for minisweagent)
         n_workers: Number of parallel workers
         config_path: Optional custom config path for the agent (defaults to mini.yaml)
+        agent_type: Type of agent to use ("minisweagent" or "claude-code")
         
     Returns:
         fitness_fn: Function that evaluates candidates on batches
     """
     
     # Create harness pool - one per worker
-    harness_pool = [SWEHarness() for _ in range(n_workers)]
+    harness_pool = [SWEHarness(agent_type=agent_type) for _ in range(n_workers)]
     harness_available = [True] * n_workers
     harness_lock = threading.Lock()
     
@@ -63,9 +69,9 @@ def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, co
             # 1. Setup Docker Container
             harness.setup_task(task_instance=task)
 
-            # 2. Run Agent
+            # 2. Run Agent (dispatches to correct agent type)
             problem = task["problem_statement"]
-            patch, agent_trace, agent_metrics = harness.run_agent(
+            patch, agent_trace, agent_metrics = harness.run(
                 problem, skills, model_name=model_name, config_path=config_path
             )
             

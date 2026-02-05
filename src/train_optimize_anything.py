@@ -472,6 +472,8 @@ def main():
     parser.add_argument("--wandb-project", type=str, default="gepa-swesmith", help="Wandb project name")
     parser.add_argument("--proposer", type=str, default="batch", choices=["batch", "loop"],
                         help="Proposer type: 'batch' (all at once) or 'loop' (one at a time, then merge)")
+    parser.add_argument("--agent", type=str, default="minisweagent", choices=["minisweagent", "claude-code"],
+                        help="Agent type: 'minisweagent' (default) or 'claude-code' (Anthropic Claude Code CLI)")
     args = parser.parse_args()
 
     if args.smoke_test:
@@ -544,7 +546,8 @@ def main():
     print("GEPA + SWE-smith Training (optimize_anything API)")
     print("="*70)
     print(f"Repository: {args.repo}")
-    print(f"Model: {args.model}")
+    print(f"Agent: {args.agent}")
+    print(f"Model: {args.model}" + (" (for minisweagent)" if args.agent == "minisweagent" else " (ignored for claude-code)"))
     print(f"Reflection Model: {args.reflection_model}")
     print(f"Proposer: {args.proposer}")
     print(f"Workers: {args.workers} (Docker containers)")
@@ -572,6 +575,7 @@ def main():
     exp_logger.save_config({
         "api": "optimize_anything",
         "repo": args.repo,
+        "agent": args.agent,
         "model": args.model,
         "reflection_model": reflection_model,
         "train_size": len(train_data),
@@ -591,8 +595,13 @@ def main():
     })
 
     # 2. Create Fitness Function
-    print(f"\nCreating fitness function with {args.workers} workers...")
-    fitness_fn = create_swe_fitness_fn(model_name=args.model, n_workers=args.workers)
+    print(f"\nCreating fitness function with {args.workers} workers ({args.agent} agent)...")
+    fitness_fn = create_swe_fitness_fn(
+        model_name=args.model,
+        n_workers=args.workers,
+        agent_type=args.agent,
+    )
+    logger.info(f"Agent: {args.agent}")
     logger.info(f"Model: {args.model}")
     logger.info(f"Execution: Docker containers via SWE-smith")
 
@@ -659,22 +668,24 @@ def main():
     original_config_results = None
     baseline_test_results = None
     if args.run_pre_optimization_testset or args.run_testset:
-        # 6a. Evaluate with original mini-swe-agent config (no skills placeholder)
-        original_config_path = Path(__file__).parent / "mini_swe_agent_config" / "original_mini.yaml"
-        print(f"\nEvaluating original mini-swe-agent config: {original_config_path}")
-        original_fitness_fn = create_swe_fitness_fn(
-            model_name=args.model, n_workers=args.workers, config_path=str(original_config_path)
-        )
-        original_config_results = evaluate_on_test(
-            original_fitness_fn, {"skills": ""}, test_data, name="Original mini-swe-agent"
-        )
-        with open(run_dir / "original_config_test_results.json", "w") as f:
-            json.dump(original_config_results, f, indent=2)
+        # 6a. Evaluate with original config (only for minisweagent)
+        if args.agent == "minisweagent":
+            original_config_path = Path(__file__).parent / "mini_swe_agent_config" / "original_mini.yaml"
+            print(f"\nEvaluating original mini-swe-agent config: {original_config_path}")
+            original_fitness_fn = create_swe_fitness_fn(
+                model_name=args.model, n_workers=args.workers, config_path=str(original_config_path),
+                agent_type=args.agent
+            )
+            original_config_results = evaluate_on_test(
+                original_fitness_fn, {"skills": ""}, test_data, name="Original mini-swe-agent"
+            )
+            with open(run_dir / "original_config_test_results.json", "w") as f:
+                json.dump(original_config_results, f, indent=2)
         
         # 6b. Evaluate with GEPA template + empty skills
-        print(f"\nEvaluating GEPA template with empty skills")
+        print(f"\nEvaluating {args.agent} with empty skills")
         baseline_test_results = evaluate_on_test(
-            fitness_fn, seed_candidate, test_data, name="GEPA template (empty skills)"
+            fitness_fn, seed_candidate, test_data, name=f"{args.agent} (empty skills)"
         )
         with open(run_dir / "baseline_test_results.json", "w") as f:
             json.dump(baseline_test_results, f, indent=2)
