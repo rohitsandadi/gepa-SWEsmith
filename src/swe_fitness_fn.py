@@ -13,12 +13,13 @@ import threading
 from src.swe_harness import SWEHarness
 
 
-def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6):
+def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, config_path: str = None):
     """Create a fitness function for SWE tasks with Docker containers.
     
     Args:
         model_name: LiteLLM model name
         n_workers: Number of parallel workers
+        config_path: Optional custom config path for the agent (defaults to mini.yaml)
         
     Returns:
         fitness_fn: Function that evaluates candidates on batches
@@ -65,7 +66,7 @@ def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6):
             # 2. Run Agent
             problem = task["problem_statement"]
             patch, agent_trace, agent_metrics = harness.run_agent(
-                problem, skills, model_name=model_name
+                problem, skills, model_name=model_name, config_path=config_path
             )
             
 
@@ -139,7 +140,7 @@ def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6):
             }
             
             status = "✓ PASS" if passed else f"✗ FAIL ({feedback_msg})"
-            print(f"  [{instance_id[:30]}] {status} [steps: {agent_metrics.get('steps', 0)}]", flush=True)
+            print(f"  [{instance_id}] {status} [steps: {agent_metrics.get('steps', 0)}]", flush=True)
             
             # Show brief debug info on failure
             if not passed:

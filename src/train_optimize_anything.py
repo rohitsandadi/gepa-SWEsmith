@@ -655,13 +655,27 @@ def main():
         stop_callbacks=stop_callbacks,
     )
 
-    # 6. Baseline evaluation (before optimization)
+    # 6. Baseline evaluations (before optimization)
+    original_config_results = None
     baseline_test_results = None
     if args.run_pre_optimization_testset or args.run_testset:
-        baseline_test_results = evaluate_on_test(
-            fitness_fn, seed_candidate, test_data, name="Baseline (before optimization)"
+        # 6a. Evaluate with original mini-swe-agent config (no skills placeholder)
+        original_config_path = Path(__file__).parent / "mini_swe_agent_config" / "original_mini.yaml"
+        print(f"\nEvaluating original mini-swe-agent config: {original_config_path}")
+        original_fitness_fn = create_swe_fitness_fn(
+            model_name=args.model, n_workers=args.workers, config_path=str(original_config_path)
         )
-        # Save baseline results
+        original_config_results = evaluate_on_test(
+            original_fitness_fn, {"skills": ""}, test_data, name="Original mini-swe-agent"
+        )
+        with open(run_dir / "original_config_test_results.json", "w") as f:
+            json.dump(original_config_results, f, indent=2)
+        
+        # 6b. Evaluate with GEPA template + empty skills
+        print(f"\nEvaluating GEPA template with empty skills")
+        baseline_test_results = evaluate_on_test(
+            fitness_fn, seed_candidate, test_data, name="GEPA template (empty skills)"
+        )
         with open(run_dir / "baseline_test_results.json", "w") as f:
             json.dump(baseline_test_results, f, indent=2)
     
@@ -723,15 +737,21 @@ def main():
             json.dump(optimized_test_results, f, indent=2)
         
         # Print comparison
+        print("\n" + "="*70)
+        print("TEST SET COMPARISON")
+        print("="*70)
+        if original_config_results:
+            print(f"  Original mini-swe-agent: {original_config_results['pass_count']}/{original_config_results['total']} ({original_config_results['avg_score']:.1%})")
         if baseline_test_results:
-            print("\n" + "="*70)
-            print("TEST SET COMPARISON")
-            print("="*70)
-            print(f"  Baseline:  {baseline_test_results['pass_count']}/{baseline_test_results['total']} ({baseline_test_results['avg_score']:.1%})")
-            print(f"  Optimized: {optimized_test_results['pass_count']}/{optimized_test_results['total']} ({optimized_test_results['avg_score']:.1%})")
-            improvement = optimized_test_results['avg_score'] - baseline_test_results['avg_score']
-            print(f"  Improvement: {improvement:+.1%}")
-            print("="*70)
+            print(f"  GEPA template (empty):   {baseline_test_results['pass_count']}/{baseline_test_results['total']} ({baseline_test_results['avg_score']:.1%})")
+        print(f"  GEPA optimized:          {optimized_test_results['pass_count']}/{optimized_test_results['total']} ({optimized_test_results['avg_score']:.1%})")
+        if original_config_results:
+            improvement_from_original = optimized_test_results['avg_score'] - original_config_results['avg_score']
+            print(f"  Improvement over original: {improvement_from_original:+.1%}")
+        if baseline_test_results:
+            improvement_from_baseline = optimized_test_results['avg_score'] - baseline_test_results['avg_score']
+            print(f"  Improvement over baseline: {improvement_from_baseline:+.1%}")
+        print("="*70)
     
     # Summary
     summary_data = {
@@ -740,6 +760,8 @@ def main():
         "total_metric_calls": result.total_metric_calls,
         "final_skills_length": len(best_skills),
     }
+    if original_config_results:
+        summary_data["original_config_test_score"] = original_config_results['avg_score']
     if baseline_test_results:
         summary_data["baseline_test_score"] = baseline_test_results['avg_score']
     if optimized_test_results:
@@ -752,8 +774,12 @@ def main():
     print(f"  Candidates Generated: {num_candidates}")
     print(f"  Total Metric Calls: {result.total_metric_calls}")
     print(f"  Final Skills Length: {len(best_skills)} chars")
+    if original_config_results:
+        print(f"  Original Config Test Score: {original_config_results['avg_score']:.1%}")
+    if baseline_test_results:
+        print(f"  Baseline Test Score: {baseline_test_results['avg_score']:.1%}")
     if optimized_test_results:
-        print(f"  Test Score: {optimized_test_results['avg_score']:.1%}")
+        print(f"  Optimized Test Score: {optimized_test_results['avg_score']:.1%}")
     
     print("\n" + "="*70)
     print("Done!")

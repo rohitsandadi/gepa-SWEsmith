@@ -1,5 +1,6 @@
 import gc
 import os
+import platform
 import yaml
 import logging
 import uuid
@@ -126,11 +127,17 @@ class SWEHarness:
         self.container = self.repo_profile.get_container(task_instance)
         print(f"  Docker container created: {self.container.id[:12]}")
         
-    def run_agent(self, problem_statement: str, skills: str, model_name: str = "gemini/gemini-2.0-flash-exp") -> Tuple[str, str, dict]:
+    def run_agent(self, problem_statement: str, skills: str, model_name: str = "gemini/gemini-2.0-flash-exp", config_path: str = None) -> Tuple[str, str, dict]:
         """Run the agent in Docker container and return (patch, conversation_trace, metrics).
 
         The skills from GEPA are injected into the system template's {{ skills }} placeholder.
         This allows GEPA to evolve the agent's learned skills over time.
+
+        Args:
+            problem_statement: The problem to solve
+            skills: Skills string to inject (ignored if config doesn't have {{ skills }} placeholder)
+            model_name: LiteLLM model name
+            config_path: Optional custom config path. Defaults to mini.yaml
 
         Returns:
             patch: The git diff of changes made
@@ -140,7 +147,8 @@ class SWEHarness:
         
         # Load our custom mini-swe-agent config from the project directory
         # This config has {{ skills }} placeholder that GEPA will optimize
-        config_path = os.path.join(os.path.dirname(__file__), "mini_swe_agent_config", "mini.yaml")
+        if config_path is None:
+            config_path = os.path.join(os.path.dirname(__file__), "mini_swe_agent_config", "mini.yaml")
         with open(config_path) as f:
             config = yaml.safe_load(f)
         # Extract only supported fields from agent config
@@ -176,8 +184,22 @@ class SWEHarness:
 
         try:
             # We wrap in try/except to ensure we capture trace even if it crashes
-            # Pass skills as a kwarg - matches {{ skills }} in system_template
-            result = agent.run(problem_statement, skills=skills)
+            # Build kwargs for template variables
+            run_kwargs = {}
+            
+            # Pass skills if the config has the {{ skills }} placeholder
+            if "{{ skills }}" in agent_config.get("system_template", ""):
+                run_kwargs["skills"] = skills
+            
+            # Pass system info if the config has these placeholders (original_mini.yaml)
+            instance_template = agent_config.get("instance_template", "")
+            if "{{system}}" in instance_template or "{{ system }}" in instance_template:
+                run_kwargs["system"] = platform.system()
+                run_kwargs["release"] = platform.release()
+                run_kwargs["version"] = platform.version()
+                run_kwargs["machine"] = platform.machine()
+            
+            result = agent.run(problem_statement, **run_kwargs)
 
             # Extract the full conversation trace from agent.messages
             # This contains the agent's reasoning, actions, and tool outputs
