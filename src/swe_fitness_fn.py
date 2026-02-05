@@ -13,7 +13,7 @@ import threading
 from src.swe_harness import SWEHarness
 
 
-def create_swe_fitness_fn(model_name: str = "gpt-4o", n_workers: int = 6):
+def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6):
     """Create a fitness function for SWE tasks with Docker containers.
     
     Args:
@@ -54,8 +54,9 @@ def create_swe_fitness_fn(model_name: str = "gpt-4o", n_workers: int = 6):
         # Get a harness from the pool
         harness_idx, harness = get_harness()
         
+        instance_id = task.get('instance_id', 'unknown')[:50]
+        
         try:
-            instance_id = task.get('instance_id', 'unknown')[:50]
             print(f"[Task {task_idx+1}/{total_tasks}] {instance_id}...", flush=True)
             
             # 1. Setup Docker Container
@@ -138,7 +139,7 @@ def create_swe_fitness_fn(model_name: str = "gpt-4o", n_workers: int = 6):
             }
             
             status = "✓ PASS" if passed else f"✗ FAIL ({feedback_msg})"
-            print(f"  [{instance_id[:30]}] {status}", flush=True)
+            print(f"  [{instance_id[:30]}] {status} [steps: {agent_metrics.get('steps', 0)}]", flush=True)
             
             # Show brief debug info on failure
             if not passed:
@@ -153,6 +154,45 @@ def create_swe_fitness_fn(model_name: str = "gpt-4o", n_workers: int = 6):
             harness.cleanup()
             
             return score, output, side_info
+        
+        except Exception as e:
+            # Handle setup failures (e.g., git checkout failed, Docker issues)
+            error_msg = str(e)
+            print(f"  [{instance_id[:30]}] ✗ FAIL (setup_error)", flush=True)
+            print(f"    Error: {error_msg[:100]}", flush=True)
+            
+            # Return failure with error info
+            output = {
+                "patch": "",
+                "success": False,
+                "steps": 0,
+                "estimated_tokens": 0,
+                "error": error_msg
+            }
+            side_info = {
+                "Input": {
+                    "Task ID": instance_id,
+                    "Problem": task.get("problem_statement", "")[:200],
+                },
+                "Generated Outputs": {
+                    "Patch": "",
+                    "Agent Trace": "",
+                },
+                "Feedback": {
+                    "Status": "setup_error",
+                    "Test Output": f"Setup failed: {error_msg}",
+                },
+                "scores": {
+                    "correctness": 0.0,
+                }
+            }
+            
+            try:
+                harness.cleanup()
+            except:
+                pass
+            
+            return 0.0, output, side_info
         
         finally:
             release_harness(harness_idx)

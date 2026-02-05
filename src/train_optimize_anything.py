@@ -77,15 +77,14 @@ class TeeOutput:
             return self.original.fileno()
 
 
-def create_logging_proposer(run_dir: Path, reflection_lm: str):
-    """Create a proposer that logs all inputs/outputs to separate files."""
+class LoggingProposer:
+    """Base proposer class that logs all inputs/outputs to separate files.
     
-    proposer_dir = run_dir / "proposer_calls"
-    proposer_dir.mkdir(parents=True, exist_ok=True)
-    call_counter = [0]  # Mutable counter
+    Can be inherited to create custom proposers with different strategies.
+    """
     
     # Custom prompt for learning terminal and repo-specific skills
-    prompt_template = """You are helping an AI coding agent learn skills for fixing bugs in a software repository.
+    DEFAULT_PROMPT_TEMPLATE = """You are helping an AI coding agent learn skills for fixing bugs in a software repository.
 
 The agent operates inside a Docker container with:
 - The repository cloned at /testbed
@@ -129,29 +128,90 @@ Adding skills blindly will not help the agent, so only add skills that are actua
 
 Provide the new skills within a SINGLE ``` block. Only include one ``` block, if you include multiple ``` blocks, the agent will not be able to parse the response."""
 
-    def logging_proposer(
+    def __init__(self, run_dir: Path, reflection_lm: str):
+        """Initialize the proposer.
+        
+        Args:
+            run_dir: Directory to save logs
+            reflection_lm: Model name for reflection LLM
+        """
+        self.run_dir = run_dir
+        self.reflection_lm = reflection_lm
+        self.proposer_dir = run_dir / "proposer_calls"
+        self.proposer_dir.mkdir(parents=True, exist_ok=True)
+        self.call_counter = 0
+        self.prompt_template = self.DEFAULT_PROMPT_TEMPLATE
+    
+    def format_prompt(self, curr_skills: str, evaluation_data: str) -> str:
+        """Format the prompt with current skills and evaluation data.
+        
+        Override this method to customize prompt formatting.
+        """
+        return self.prompt_template.format(
+            curr_skills=curr_skills if curr_skills else "(No skills learned yet)",
+            evaluation_data=evaluation_data
+        )
+    
+    def call_llm(self, prompt: str) -> str:
+        """Call the LLM and return the response text.
+        
+        Override this method to customize LLM calling.
+        """
+        response = litellm.completion(
+            model=self.reflection_lm,
+            messages=[{"role": "user", "content": prompt}],
+            drop_params=True,  # Let litellm drop unsupported params like temperature for gpt-5
+        )
+        return response.choices[0].message.content
+    
+    def extract_skills(self, response_text: str) -> str:
+        """Extract skills from LLM response.
+        
+        Override this method to customize extraction logic.
+        """
+        match = re.search(r'```(?:\w*\n)?(.*?)```', response_text, re.DOTALL)
+        return match.group(1).strip() if match else response_text.strip()
+    
+    def log_call(self, call_num: int, log_entry: dict) -> Path:
+        """Log the call to a file and return the file path.
+        
+        Override this method to customize logging.
+        """
+        call_file = self.proposer_dir / f"call_{call_num:03d}.json"
+        with open(call_file, "w") as f:
+            json.dump(log_entry, f, indent=2, default=str)
+        return call_file
+    
+    def __call__(
+        self,
         candidate: dict,
         reflective_dataset: dict,
         components_to_update: list
     ) -> dict:
-        """Custom proposer that logs inputs/outputs to separate files."""
-        call_counter[0] += 1
-        call_num = call_counter[0]
+        """Main proposer logic - processes all side info at once.
+        
+        Args:
+            candidate: Current candidate dict with component values
+            reflective_dataset: Dict mapping components to their side info lists
+            components_to_update: List of component names to update
+            
+        Returns:
+            Dict mapping components to their new values
+        """
+        self.call_counter += 1
+        call_num = self.call_counter
         
         results = {}
         
         for component in components_to_update:
             curr_value = candidate.get(component, "")
             side_info = reflective_dataset.get(component, [])
-            
+  
             # Format side info as string
             side_info_str = json.dumps(side_info, indent=2, default=str)
             
             # Format the prompt
-            prompt = prompt_template.format(
-                curr_skills=curr_value if curr_value else "(No skills learned yet)",
-                evaluation_data=side_info_str
-            )
+            prompt = self.format_prompt(curr_value, side_info_str)
             
             # Prepare log entry
             log_entry = {
@@ -160,21 +220,14 @@ Provide the new skills within a SINGLE ``` block. Only include one ``` block, if
                 "current_skills": curr_value,
                 "evaluation_data": side_info,
                 "full_prompt": prompt,
+                "type": "batch",
             }
             
             # Call the reflection LLM
             try:
-                response = litellm.completion(
-                    model=reflection_lm,
-                    messages=[{"role": "user", "content": prompt}],
-                    drop_params=True,  # Let litellm drop unsupported params like temperature for gpt-5
-                )
-                response_text = response.choices[0].message.content
-                
-                # Extract new value from ``` blocks
-                match = re.search(r'```(?:\w*\n)?(.*?)```', response_text, re.DOTALL)
-                new_value = match.group(1).strip() if match else response_text.strip()
-                
+                response_text = self.call_llm(prompt)
+                new_value = self.extract_skills(response_text)
+
                 log_entry["llm_response"] = response_text
                 log_entry["new_skills"] = new_value
                 log_entry["success"] = True
@@ -187,9 +240,7 @@ Provide the new skills within a SINGLE ``` block. Only include one ``` block, if
                 results[component] = curr_value  # Keep current on error
             
             # Write to separate file for this call
-            call_file = proposer_dir / f"call_{call_num:03d}.json"
-            with open(call_file, "w") as f:
-                json.dump(log_entry, f, indent=2, default=str)
+            call_file = self.log_call(call_num, log_entry)
             
             # Also print summary
             print(f"\n[PROPOSER] Call {call_num} for '{component}':")
@@ -199,8 +250,118 @@ Provide the new skills within a SINGLE ``` block. Only include one ``` block, if
             print(f"  Saved to: {call_file}")
         
         return results
+
+
+class LoopProposer(LoggingProposer):
+    """Proposer that processes one side info item at a time, then merges all skills."""
     
-    return logging_proposer
+    MERGE_TEMPLATE = """You are helping an AI coding agent consolidate learned skills for fixing bugs.
+
+## New Skills/Insights from Recent Evaluations
+{intermediate_skills}
+
+## Your Task
+Merge all the above skills into a SINGLE, coherent skill set that:
+1. Eliminates redundancy
+2. Resolves conflicts (keep the most reliable/general one)
+3. Prioritizes (most important first)
+4. Stays concise
+
+Provide the merged skills within a SINGLE ``` block."""
+
+    def _process_single_item(self, component: str, curr_skills: str, item: dict, item_idx: int, total_items: int) -> str | None:
+        """Process a single evaluation item and return extracted skills, or None on failure."""
+        self.call_counter += 1
+        call_num = self.call_counter
+        
+        item_str = json.dumps(item, indent=2, default=str)
+        prompt = self.format_prompt(curr_skills, item_str)
+        
+        log_entry = {
+            "call_num": call_num,
+            "component": component,
+            "item_index": item_idx,
+            "total_items": total_items,
+            "current_skills": curr_skills,
+            "evaluation_item": item,
+            "full_prompt": prompt,
+            "type": "single_item",
+        }
+        
+        try:
+            response_text = self.call_llm(prompt)
+            new_skills = self.extract_skills(response_text)
+            log_entry.update({"llm_response": response_text, "extracted_skills": new_skills, "success": True})
+            result = new_skills
+        except Exception as e:
+            log_entry.update({"error": str(e), "success": False})
+            result = None
+        
+        call_file = self.log_call(call_num, log_entry)
+        print(f"\n[LOOP PROPOSER] Call {call_num} - Item {item_idx+1}/{total_items} for '{component}': {'OK' if result else 'FAIL'}")
+        return result
+
+    def _merge_skills(self, component: str, curr_skills: str, intermediate_skills: list) -> str:
+        """Merge intermediate skills into final skill set."""
+        self.call_counter += 1
+        call_num = self.call_counter
+        
+        formatted = "\n\n".join(f"### Evaluation {i}\n```\n{s}\n```" for i, s in enumerate(intermediate_skills, 1))
+        merge_prompt = self.MERGE_TEMPLATE.format(intermediate_skills=formatted)
+        
+        log_entry = {
+            "call_num": call_num,
+            "component": component,
+            "type": "merge",
+            "num_intermediate_skills": len(intermediate_skills),
+            "intermediate_skills": intermediate_skills,
+            "full_prompt": merge_prompt,
+        }
+        
+        try:
+            response_text = self.call_llm(merge_prompt)
+            final_skills = self.extract_skills(response_text)
+            log_entry.update({"llm_response": response_text, "final_skills": final_skills, "success": True})
+        except Exception as e:
+            log_entry.update({"error": str(e), "success": False})
+            final_skills = "\n\n---\n\n".join(intermediate_skills)  # Fallback
+        
+        call_file = self.log_call(call_num, log_entry)
+        print(f"\n[LOOP PROPOSER] Merge call {call_num} for '{component}': {len(intermediate_skills)} items -> {len(final_skills)} chars")
+        return final_skills
+
+    def __call__(self, candidate: dict, reflective_dataset: dict, components_to_update: list) -> dict:
+        """Process each side info item one at a time, then merge all skills."""
+        results = {}
+        
+        for component in components_to_update:
+            curr_skills = candidate.get(component, "")
+            side_info_items = reflective_dataset.get(component, [])
+            
+            if not side_info_items:
+                results[component] = curr_skills
+                continue
+            
+            # Process each item
+            intermediate_skills = [
+                skills for i, item in enumerate(side_info_items)
+                if (skills := self._process_single_item(component, curr_skills, item, i, len(side_info_items)))
+            ]
+            
+            # Merge results
+            results[component] = self._merge_skills(component, curr_skills, intermediate_skills) if intermediate_skills else curr_skills
+        
+        return results
+
+
+def create_logging_proposer(run_dir: Path, reflection_lm: str):
+    """Create a LoggingProposer instance (factory function for backward compatibility)."""
+    return LoggingProposer(run_dir, reflection_lm)
+
+
+def create_loop_proposer(run_dir: Path, reflection_lm: str):
+    """Create a LoopProposer instance that processes items one at a time then merges."""
+    return LoopProposer(run_dir, reflection_lm)
 
 import random
 
@@ -296,10 +457,12 @@ def main():
     parser.add_argument("--reflection-model", type=str, default="gpt-5.2-pro",
                         help="Model for GEPA reflection/prompt optimization (default: gpt-5.2-pro)")
     parser.add_argument("--smoke-test", action="store_true", help="Run a quick smoke test")
-    parser.add_argument("--eval-test", action="store_true", 
-                        help="Evaluate on test set before and after optimization")
+    parser.add_argument("--run-post-optimization-testset", action="store_true", 
+                        help="Evaluate on test set after optimization")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from a previous run directory (e.g., gepa_results/logs/run_XXXXXXXX)")
+    parser.add_argument("--run-pre-optimization-testset", action="store_true", help="run the agent on the test set before optimization")
+    parser.add_argument("--run-testset", action="store_true", help="run the agent on the test set before and after optimization")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument("--timeout", type=int, default=43200, help="Max seconds to run (default: 12 hours)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -307,6 +470,8 @@ def main():
     parser.add_argument("--max-metric-calls", type=int, default=600, help="Max rollouts for GEPA (controls budget)")
     parser.add_argument("--wandb", action="store_true", help="Enable wandb tracking")
     parser.add_argument("--wandb-project", type=str, default="gepa-swesmith", help="Wandb project name")
+    parser.add_argument("--proposer", type=str, default="batch", choices=["batch", "loop"],
+                        help="Proposer type: 'batch' (all at once) or 'loop' (one at a time, then merge)")
     args = parser.parse_args()
 
     if args.smoke_test:
@@ -343,7 +508,7 @@ def main():
         resumed_from = str(resume_dir)
 
     # Initialize experiment logger FIRST to get run_id
-    exp_logger = ExperimentLogger(log_dir="gepa_results/logs")
+    exp_logger = ExperimentLogger(log_dir="gepa_results/logs", repo=args.repo)
     set_logger(exp_logger)
     run_dir = exp_logger.log_dir
     
@@ -381,6 +546,7 @@ def main():
     print(f"Repository: {args.repo}")
     print(f"Model: {args.model}")
     print(f"Reflection Model: {args.reflection_model}")
+    print(f"Proposer: {args.proposer}")
     print(f"Workers: {args.workers} (Docker containers)")
     print(f"Run directory: {run_dir}")
     if resumed_from:
@@ -415,11 +581,13 @@ def main():
         "workers": args.workers,
         "seed": args.seed,
         "timeout": args.timeout,
-        "eval_test": args.eval_test,
         "resumed_from": resumed_from,
+        "run_pre_optimization_testset": args.run_pre_optimization_testset,
+        "run_post_optimization_testset": args.run_post_optimization_testset,
         "execution_mode": "docker",
         "wandb": args.wandb,
         "wandb_project": args.wandb_project if args.wandb else None,
+        "proposer": args.proposer,
     })
 
     # 2. Create Fitness Function
@@ -459,8 +627,11 @@ def main():
     if "openai" in reflection_model.lower() or reflection_model.startswith("gpt-"):
         os.environ["OPENAI_API_BASE"] = "https://us.api.openai.com/v1"
 
-    # Create logging proposer to capture all proposer calls
-    logging_proposer = create_logging_proposer(run_dir, reflection_model)
+    # Create proposer based on command line choice
+    if args.proposer == "loop":
+        proposer = LoopProposer(run_dir, reflection_model)
+    elif args.proposer == "batch":
+        proposer = LoggingProposer(run_dir, reflection_model)
     
     config = GEPAConfig(
         engine=EngineConfig(
@@ -475,7 +646,7 @@ def main():
             reflection_minibatch_size=3,
             skip_perfect_score=True,
             perfect_score=1.0,
-            custom_candidate_proposer=logging_proposer,
+            custom_candidate_proposer=proposer,
         ),
         tracking=TrackingConfig(
             use_wandb=args.wandb,
@@ -486,7 +657,7 @@ def main():
 
     # 6. Baseline evaluation (before optimization)
     baseline_test_results = None
-    if args.eval_test and not resumed_from:
+    if args.run_pre_optimization_testset or args.run_testset:
         baseline_test_results = evaluate_on_test(
             fitness_fn, seed_candidate, test_data, name="Baseline (before optimization)"
         )
@@ -542,7 +713,7 @@ def main():
     
     # 9. Post-optimization test evaluation
     optimized_test_results = None
-    if args.eval_test:
+    if args.run_post_optimization_testset or args.run_testset:
         optimized_candidate = {"skills": best_skills}
         optimized_test_results = evaluate_on_test(
             fitness_fn, optimized_candidate, test_data, name="Optimized (after optimization)"
